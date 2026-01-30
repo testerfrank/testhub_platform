@@ -73,7 +73,7 @@
     </div>
 
     <!-- 添加/编辑配置弹窗 -->
-    <div v-show="shouldShowModal" :class="['config-modal', { hidden: !shouldShowModal }]" @click="closeModals" @keydown.esc="closeModals">
+    <div v-show="shouldShowModal" :class="['config-modal', { hidden: !shouldShowModal }]" @keydown.esc="closeModals">
       <div class="modal-content" @click.stop>
         <div class="modal-header">
           <h3>{{ isEditing ? '编辑' : '添加' }}AI智能模式配置</h3>
@@ -172,7 +172,7 @@
     </div>
 
     <!-- 连接测试结果弹窗 -->
-    <div v-if="showTestResult" class="test-result-modal" @click="closeTestResult">
+    <div v-if="showTestResult" class="test-result-modal" @keydown.esc="closeTestResult">
       <div class="modal-content" @click.stop>
         <div class="modal-header">
           <h3>连接测试结果</h3>
@@ -432,7 +432,12 @@ const testConnection = async (config) => {
   config.testing = true
 
   try {
-    await api.post(`/ui-automation/ai-models/${config.id}/test_connection/`)
+    // 测试连接需要更长的超时时间（90秒），因为大模型响应较慢
+    await api.post(
+      `/ui-automation/ai-models/${config.id}/test_connection/`,
+      {},
+      { timeout: 90000 }  // 90秒超时
+    )
     testResult.value = {
       success: true,
       message: '连接成功！模型配置正常工作。'
@@ -466,7 +471,12 @@ const testConnectionInModal = async () => {
   if (isEditing.value && configForm.value.api_key.includes('*')) {
     isTestingInModal.value = true
     try {
-      await api.post(`/ui-automation/ai-models/${editingConfigId.value}/test_connection/`)
+      // 测试连接需要90秒超时
+      await api.post(
+        `/ui-automation/ai-models/${editingConfigId.value}/test_connection/`,
+        {},
+        { timeout: 90000 }
+      )
 
       testResult.value = {
         success: true,
@@ -490,12 +500,17 @@ const testConnectionInModal = async () => {
   isTestingInModal.value = true
 
   try {
-    await api.post('/ui-automation/ai-models/test_connection/', {
-      provider: configForm.value.model_type,
-      model_name: configForm.value.model_name,
-      api_key: configForm.value.api_key,
-      base_url: configForm.value.base_url
-    })
+    // 测试连接需要90秒超时
+    await api.post(
+      '/ui-automation/ai-models/test_connection/',
+      {
+        provider: configForm.value.model_type,
+        model_name: configForm.value.model_name,
+        api_key: configForm.value.api_key,
+        base_url: configForm.value.base_url
+      },
+      { timeout: 90000 }
+    )
 
     testResult.value = {
       success: true,
