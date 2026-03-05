@@ -303,19 +303,24 @@ class AppTestExecutor:
             passed = 0
             failed = 0
             skipped = 0
-            
+            broken = 0
+
+            logger.debug(f"解析Allure目录 {results_dir} ，找到文件: {result_files}")
             for result_file in result_files:
                 try:
                     with open(result_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                        
+
                         status = data.get('status', '').lower()
                         total += 1
-                        
+
                         if status == 'passed':
                             passed += 1
-                        elif status in ('failed', 'broken'):
-                            # allure 会把异常用例标记为 broken，需要当作失败处理
+                        elif status == 'broken':
+                            # broken既计入broken也算作失败
+                            broken += 1
+                            failed += 1
+                        elif status == 'failed':
                             failed += 1
                         elif status == 'skipped':
                             skipped += 1
@@ -323,17 +328,18 @@ class AppTestExecutor:
                             # 其他未知状态同样视为失败，保证不会被误判为通过
                             failed += 1
                             logger.debug(f"未知测试状态 '{status}' 视为失败: {result_file}")
-                            
+
                 except Exception as e:
                     logger.warning(f"解析结果文件失败: {result_file}, 错误: {e}")
             
-            logger.info(f"测试结果统计: 总数={total}, 通过={passed}, 失败={failed}, 跳过={skipped}")
+            logger.info(f"测试结果统计: 总数={total}, 通过={passed}, 失败={failed}, 跳过={skipped}, broken={broken}")
             
             return {
                 'total': total,
                 'passed': passed,
                 'failed': failed,
                 'skipped': skipped,
+                'broken': broken,
             }
             
         except Exception as e:
@@ -343,6 +349,7 @@ class AppTestExecutor:
                 'passed': 0,
                 'failed': 0,
                 'skipped': 0,
+                'broken': 0,
             }
     
     def calculate_progress(self, execution_id: Optional[int] = None) -> int:
