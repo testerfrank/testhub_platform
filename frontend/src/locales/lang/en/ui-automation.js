@@ -94,7 +94,21 @@ export default {
     stop: 'Stop',
     rerun: 'Rerun',
     details: 'Details',
-    query: 'Query'
+    query: 'Query',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    pleaseInput: 'Please input',
+    required: 'This field is required',
+    add: 'Add',
+    warning: 'Warning',
+    fetchFailed: 'Failed to fetch data',
+    saveFailed: 'Failed to save',
+    createSuccess: 'Created successfully',
+    updateSuccess: 'Updated successfully',
+    deleteSuccess: 'Deleted successfully',
+    deleteFailed: 'Failed to delete',
+    deleteConfirm: 'Are you sure you want to delete? This action cannot be undone.',
+    confirmDelete: 'Confirm Delete'
   },
 
   // Status
@@ -238,16 +252,17 @@ export default {
       title: 'Tip: Enter locator value based on strategy',
       id: 'ID: Enter element id attribute value',
       css: 'CSS Selector: Enter CSS selector, e.g. .class or #id',
-      xpath: 'XPath: Enter XPath expression, e.g. //input[@name="username"]',
+      xpath: 'XPath: Enter XPath expression, e.g. //div/button or //input[1]',
       other: 'For other strategies, enter the corresponding attribute value'
     },
     rules: {
       nameRequired: 'Please enter element name',
-      nameLength: 'Element name must be 2-100 characters',
+      nameLength: 'Element name length should be between 1 and 200 characters',
       pageRequired: 'Please enter page name',
       pageNameRequired: 'Please enter page name',
       strategyRequired: 'Please select locator strategy',
-      locatorRequired: 'Please enter locator value'
+      locatorRequired: 'Please enter locator value',
+      locatorLength: 'Locator expression length should be between 1 and 500 characters'
     },
     messages: {
       loadFailed: 'Failed to load elements',
@@ -1053,6 +1068,17 @@ export default {
   // Test Case Management
   testCase: {
     title: 'Test Case Management',
+    // Test case run related
+    run: {
+      start: 'Starting test case - {engine} engine / {browser} browser / {mode} mode',
+      success: 'Test case executed successfully',
+      failed: 'Test case execution failed',
+      failedWithMessage: 'Test case execution failed: {message}'
+    },
+    runMode: {
+      headless: 'Headless',
+      headed: 'Headed'
+    },
     newTestCase: 'New Test Case',
     testCaseList: 'Test Case List',
     searchPlaceholder: 'Search test cases...',
@@ -1062,10 +1088,10 @@ export default {
     saveTestCase: 'Save',
     selectEngine: 'Select Engine',
     selectBrowser: 'Select Browser',
-    runMode: 'Run Mode',
+    runModeLabel: 'Run Mode',
     headedMode: 'Headed Mode',
     headlessMode: 'Headless Mode',
-    run: 'Run',
+    runLabel: 'Run',
     running: 'Running...',
     viewResult: 'View Execution Result',
     editSteps: 'Edit Steps',
@@ -1145,9 +1171,12 @@ export default {
     },
     variables: {
       randomInt: 'Generate random integer',
+      randomIntDesc: 'Generate random integer in specified range, params: min, max, count',
       randomFloat: 'Generate random float',
+      randomFloatDesc: 'Generate random float in specified range, params: min, max, precision, count',
       randomDigits: 'Generate random digit string',
       randomString: 'Generate random alphanumeric string',
+      randomStringDesc: 'Generate random string, params: length, char_type(all/letter/number), count',
       randomLetters: 'Generate random letter string',
       randomChinese: 'Generate random Chinese characters',
       randomPhone: 'Generate random phone number',
@@ -1188,6 +1217,68 @@ export default {
       createFailed: 'Failed to save',
       variableInserted: 'Variable inserted',
       dataFactorySelected: 'Data factory selected: {toolName}'
+      },
+    // Action types (for displaying action type names)
+    actionType: {
+      click: 'Click',
+      fill: 'Fill',
+      getText: 'Get Text',
+      waitFor: 'Wait For',
+      hover: 'Hover',
+      scroll: 'Scroll',
+      screenshot: 'Screenshot',
+      assert: 'Assert',
+      wait: 'Wait'
+    },
+    // Action text (for displaying action descriptions in execution logs)
+    actionText: {
+      click: 'Click',
+      fill: 'Fill Text',
+      getText: 'Get Text',
+      waitFor: 'Wait For',
+      hover: 'Hover',
+      scroll: 'Scroll',
+      screenshot: 'Screenshot',
+      assert: 'Assert',
+      wait: 'Wait'
+    },
+    // Status text
+    status: {
+      draft: 'Draft',
+      ready: 'Ready',
+      running: 'Running',
+      passed: 'Passed',
+      failed: 'Failed',
+      unknown: 'Unknown'
+    },
+    // Form validation messages
+    form: {
+      nameRequired: 'Please enter test case name'
+    },
+    // Save operation messages
+    save: {
+      success: 'Test case saved successfully',
+      failed: 'Failed to save test case'
+    },
+    // Delete operation messages
+    delete: {
+      confirm: 'Are you sure to delete test case "{name}"?',
+      title: 'Confirm Delete',
+      success: 'Deleted successfully'
+    },
+    // Copy operation messages
+    copy: {
+      confirm: 'Are you sure to copy test case "{name}"?',
+      title: 'Confirm Copy',
+      success: 'Copied successfully'
+    },
+    // Create operation messages
+    create: {
+      success: 'Test case created successfully'
+    },
+    // Update operation messages
+    update: {
+      success: 'Test case updated successfully'
     }
   },
 

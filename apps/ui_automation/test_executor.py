@@ -254,16 +254,23 @@ class TestExecutor:
 
                 # 为每个测试用例启动新的浏览器实例
                 try:
+                    # 公共浏览器参数
+                    common_args = [
+                        '--disable-blink-features=AutomationControlled',  # 避免被检测
+                        '--ignore-certificate-errors',  # 忽略证书错误
+                        '--allow-insecure-localhost',  # 允许不安全localhost
+                        '--disable-web-security',  # 禁用web安全限制（跨域）
+                    ]
                     # 选择浏览器
                     if self.browser == 'firefox':
-                        browser = p.firefox.launch(headless=self.headless)
+                        browser = p.firefox.launch(headless=self.headless, args=common_args)
                     elif self.browser == 'safari':
-                        browser = p.webkit.launch(headless=self.headless)
+                        browser = p.webkit.launch(headless=self.headless, args=common_args)
                     else:  # chrome or edge
                         # 添加防检测参数
                         browser = p.chromium.launch(
                             headless=self.headless,
-                            args=['--disable-blink-features=AutomationControlled']
+                            args=common_args
                         )
 
                     print(f"✓ 浏览器已启动")

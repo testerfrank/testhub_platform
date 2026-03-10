@@ -94,7 +94,21 @@ export default {
     stop: '停止',
     rerun: '重跑',
     details: '详情',
-    query: '查询'
+    query: '查询',
+    enabled: '启用',
+    disabled: '禁用',
+    pleaseInput: '请输入',
+    required: '此项为必填项',
+    add: '添加',
+    warning: '警告',
+    fetchFailed: '获取数据失败',
+    saveFailed: '保存失败',
+    createSuccess: '创建成功',
+    updateSuccess: '更新成功',
+    deleteSuccess: '删除成功',
+    deleteFailed: '删除失败',
+    deleteConfirm: '确定要删除吗？此操作不可恢复。',
+    confirmDelete: '确认删除'
   },
 
   // 状态
@@ -238,18 +252,20 @@ export default {
       title: '提示：根据定位策略输入对应的定位值',
       id: 'ID: 输入元素的id属性值',
       css: 'CSS Selector: 输入CSS选择器，如 .class 或 #id',
-      xpath: 'XPath: 输入XPath表达式，如 //input[@name="username"]',
+      xpath: 'XPath: 输入XPath表达式，如 //div/button 或 //input[1]',
       other: '其他策略请输入对应属性的值'
     },
     rules: {
       nameRequired: '请输入元素名称',
-      nameLength: '元素名称长度在 2 到 100 个字符',
+      nameLength: '元素名称长度在 1 到 200 个字符',
       pageRequired: '请输入所属页面',
       pageNameRequired: '请输入页面名称',
       strategyRequired: '请选择定位策略',
-      locatorRequired: '请输入定位值'
+      locatorRequired: '请输入定位值',
+      locatorLength: '定位表达式长度在 1 到 500 个字符'
     },
     messages: {
+      validateFailed: '表单验证失败，请检查必填项',
       loadFailed: '获取元素列表失败',
       loadDetailFailed: '获取元素详情失败',
       getDetailFailed: '获取元素详情失败',
@@ -275,7 +291,6 @@ export default {
       pageUpdateFailed: '页面更新失败',
       pageDeleteSuccess: '页面删除成功',
       validateSuccess: '元素定位器验证通过',
-      validateFailed: '验证失败',
       elementsLoaded: '已加载 {count} 个元素',
       insertCode: '插入元素代码',
       validatePassed: '元素验证通过',
@@ -1053,6 +1068,17 @@ export default {
   // 测试用例管理
   testCase: {
     title: '测试用例管理',
+    // 测试用例运行相关
+    run: {
+      start: '开始运行测试用例 - {engine}引擎 / {browser}浏览器 / {mode}模式',
+      success: '测试用例运行成功',
+      failed: '测试用例运行失败',
+      failedWithMessage: '测试用例运行失败: {message}'
+    },
+    runMode: {
+      headless: '无头',
+      headed: '有头'
+    },
     newTestCase: '新建测试用例',
     testCaseList: '测试用例列表',
     searchPlaceholder: '搜索测试用例...',
@@ -1062,10 +1088,10 @@ export default {
     saveTestCase: '保存',
     selectEngine: '选择引擎',
     selectBrowser: '选择浏览器',
-    runMode: '运行模式',
+    runModeLabel: '运行模式',
     headedMode: '有头模式',
     headlessMode: '无头模式',
-    run: '运行',
+    runLabel: '运行',
     running: '执行中...',
     viewResult: '查看执行结果',
     editSteps: '编辑步骤',
@@ -1145,9 +1171,12 @@ export default {
     },
     variables: {
       randomInt: '生成随机整数',
+      randomIntDesc: '生成指定范围内的随机整数，参数：最小值、最大值、数量',
       randomFloat: '生成随机浮点数',
+      randomFloatDesc: '生成指定范围内的随机浮点数，参数：最小值、最大值、小数位数、数量',
       randomDigits: '生成随机数字字符串',
       randomString: '生成随机字母数字字符串',
+      randomStringDesc: '生成随机字符串，参数：长度、字符类型(all/letter/number)、数量',
       randomLetters: '生成随机字母字符串',
       randomChinese: '生成随机中文字符',
       randomPhone: '生成随机手机号',
@@ -1188,6 +1217,68 @@ export default {
       createFailed: '保存失败',
       variableInserted: '已插入变量',
       dataFactorySelected: '已选择数据工厂: {toolName}'
+      },
+    // 操作类型（用于显示操作类型名称）
+    actionType: {
+      click: '点击',
+      fill: '填写',
+      getText: '获取文本',
+      waitFor: '等待元素',
+      hover: '悬停',
+      scroll: '滚动',
+      screenshot: '截图',
+      assert: '断言',
+      wait: '等待'
+    },
+    // 操作文本（用于执行日志中显示操作描述）
+    actionText: {
+      click: '点击',
+      fill: '输入文本',
+      getText: '获取文本',
+      waitFor: '等待元素',
+      hover: '悬停',
+      scroll: '滚动',
+      screenshot: '截图',
+      assert: '断言',
+      wait: '等待'
+    },
+    // 状态文本
+    status: {
+      draft: '草稿',
+      ready: '就绪',
+      running: '执行中',
+      passed: '通过',
+      failed: '失败',
+      unknown: '未知'
+    },
+    // 表单验证消息
+    form: {
+      nameRequired: '请输入测试用例名称'
+    },
+    // 保存操作消息
+    save: {
+      success: '测试用例保存成功',
+      failed: '保存测试用例失败'
+    },
+    // 删除操作消息
+    delete: {
+      confirm: '确定要删除测试用例"{name}"吗？',
+      title: '确认删除',
+      success: '删除成功'
+    },
+    // 复制操作消息
+    copy: {
+      confirm: '确定要复制测试用例"{name}"吗？',
+      title: '确认复制',
+      success: '复制成功'
+    },
+    // 创建操作消息
+    create: {
+      success: '测试用例创建成功'
+    },
+    // 更新操作消息
+    update: {
+      success: '测试用例更新成功'
     }
   },
 

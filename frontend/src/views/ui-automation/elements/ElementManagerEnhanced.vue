@@ -81,34 +81,42 @@
           <!-- 元素基本信息 -->
           <div class="element-header">
             <div class="element-info">
-              <el-input
-                v-model="selectedElement.name"
-                :placeholder="$t('uiAutomation.element.elementNamePlaceholder')"
-                size="small"
-                style="width: 300px; margin-right: 10px"
-              />
-              <el-select v-model="selectedElement.element_type" :placeholder="$t('uiAutomation.element.elementType')" size="small" style="width: 120px;">
-                <el-option :label="$t('uiAutomation.element.elementTypes.button')" value="BUTTON" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.input')" value="INPUT" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.link')" value="LINK" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.dropdown')" value="DROPDOWN" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.checkbox')" value="CHECKBOX" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.radio')" value="RADIO" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.text')" value="TEXT" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.image')" value="IMAGE" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.table')" value="TABLE" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.form')" value="FORM" />
-                <el-option :label="$t('uiAutomation.element.elementTypes.modal')" value="MODAL" />
-              </el-select>
-              <el-button size="small" @click="saveElement" :loading="saving" ref="saveButtonRef">
-                {{ $t('uiAutomation.common.save') }}
-              </el-button>
+              <el-form ref="elementHeaderFormRef" :model="selectedElement" :rules="elementHeaderRules" inline>
+                <el-form-item prop="name" :label="$t('uiAutomation.element.elementName')" required>
+                  <el-input
+                    v-model="selectedElement.name"
+                    :placeholder="$t('uiAutomation.element.elementNamePlaceholder')"
+                    style="width: 300px"
+                    @blur="validateHeaderField('name')"
+                  />
+                </el-form-item>
+                <el-form-item :label="$t('uiAutomation.element.elementType')">
+                  <el-select v-model="selectedElement.element_type" :placeholder="$t('uiAutomation.element.elementType')" style="width: 120px;">
+                    <el-option :label="$t('uiAutomation.element.elementTypes.button')" value="BUTTON" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.input')" value="INPUT" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.link')" value="LINK" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.dropdown')" value="DROPDOWN" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.checkbox')" value="CHECKBOX" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.radio')" value="RADIO" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.text')" value="TEXT" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.image')" value="IMAGE" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.table')" value="TABLE" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.form')" value="FORM" />
+                    <el-option :label="$t('uiAutomation.element.elementTypes.modal')" value="MODAL" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item>
+                  <el-button type="primary" @click="saveElement" :loading="saving" ref="saveButtonRef">
+                    {{ $t('uiAutomation.common.save') }}
+                  </el-button>
+                </el-form-item>
+              </el-form>
             </div>
           </div>
 
           <!-- 元素配置 -->
           <div class="element-form">
-            <el-form :key="formKey" :model="selectedElement" label-width="100px" size="small">
+            <el-form ref="elementFormRef" :key="formKey" :model="selectedElement" :rules="elementRules" label-width="100px">
               <el-row :gutter="20">
                 <el-col :span="12">
                   <el-form-item :label="$t('uiAutomation.element.page')">
@@ -131,12 +139,13 @@
 
               <el-row :gutter="20">
                 <el-col :span="12">
-                  <el-form-item :label="$t('uiAutomation.element.locatorStrategy')" prop="locator_strategy_id">
+                  <el-form-item :label="$t('uiAutomation.element.locatorStrategy')" prop="locator_strategy_id" required>
                     <el-select
                       v-model="selectedElement.locator_strategy_id"
                       :key="`strategy-${formKey}-${selectedElement.locator_strategy_id || 'null'}`"
                       :placeholder="$t('uiAutomation.element.rules.strategyRequired')"
                       value-key="id"
+                      @blur="validateField('locator_strategy_id')"
                     >
                       <el-option
                         v-for="strategy in locatorStrategies"
@@ -145,10 +154,6 @@
                         :value="strategy.id"
                       />
                     </el-select>
-                    <!-- 调试信息 -->
-                    <div style="font-size: 10px; color: #666; margin-top: 2px;">
-                      {{ $t('uiAutomation.element.debugInfo') }}: {{ $t('uiAutomation.element.currentValue') }}={{selectedElement.locator_strategy_id}} ({{typeof selectedElement.locator_strategy_id}})
-                    </div>
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
@@ -173,8 +178,8 @@
                 </el-col>
               </el-row>
 
-              <el-form-item :label="$t('uiAutomation.element.locatorExpression')" prop="locator_value">
-                <el-input v-model="selectedElement.locator_value" :placeholder="$t('uiAutomation.element.locatorExpressionPlaceholder')" />
+              <el-form-item :label="$t('uiAutomation.element.locatorExpression')" prop="locator_value" required>
+                <el-input v-model="selectedElement.locator_value" :placeholder="$t('uiAutomation.element.locatorExpressionPlaceholder')" @blur="validateField('locator_value')" />
                 <div class="form-help-text">
                   {{ $t('uiAutomation.element.locatorTip.title') }}<br>
                   - {{ $t('uiAutomation.element.locatorTip.id') }}<br>
@@ -223,9 +228,17 @@
     <!-- 右键菜单 -->
     <ul v-show="showContextMenu" class="context-menu" :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }">
       <li @click="addContextElement">{{ $t('uiAutomation.element.contextMenu.addElement') }}</li>
-      <li @click="addSubPage">{{ $t('uiAutomation.element.contextMenu.addSubPage') }}</li>
-      <li @click="editNode">{{ $t('uiAutomation.element.contextMenu.edit') }}</li>
-      <li @click="deleteNode">{{ $t('uiAutomation.element.contextMenu.delete') }}</li>
+      <!-- 只有在普通页面节点下才显示"新增子页面"选项 -->
+      <li v-if="rightClickedNode && rightClickedNode.type === 'page' && rightClickedNode.id !== 'unassigned'" @click="addSubPage">
+        {{ $t('uiAutomation.element.contextMenu.addSubPage') }}
+      </li>
+      <!-- "未关联页面"节点不显示编辑和删除选项 -->
+      <li v-if="rightClickedNode && rightClickedNode.id !== 'unassigned'" @click="editNode">
+        {{ $t('uiAutomation.element.contextMenu.edit') }}
+      </li>
+      <li v-if="rightClickedNode && rightClickedNode.id !== 'unassigned'" @click="deleteNode">
+        {{ $t('uiAutomation.element.contextMenu.delete') }}
+      </li>
     </ul>
 
     <!-- 编辑页面对话框 -->
@@ -301,6 +314,8 @@ const formKey = ref(0) // 用于强制重新渲染表单组件
 const treeRef = ref(null)
 const pageFormRef = ref(null)
 const editPageFormRef = ref(null)
+const elementFormRef = ref(null)
+const elementHeaderFormRef = ref(null)
 
 // 对话框控制
 const showCreatePageDialog = ref(false)
@@ -336,6 +351,25 @@ const treeProps = {
 const pageRules = computed(() => ({
   name: [
     { required: true, message: t('uiAutomation.element.rules.pageNameRequired'), trigger: 'blur' }
+  ]
+}))
+
+// 元素表单头部验证规则（元素名称）
+const elementHeaderRules = computed(() => ({
+  name: [
+    { required: true, message: t('uiAutomation.element.rules.nameRequired'), trigger: 'blur' },
+    { min: 1, max: 200, message: t('uiAutomation.element.rules.nameLength'), trigger: 'blur' }
+  ]
+}))
+
+// 元素表单验证规则
+const elementRules = computed(() => ({
+  locator_strategy_id: [
+    { required: true, message: t('uiAutomation.element.rules.strategyRequired'), trigger: 'change' }
+  ],
+  locator_value: [
+    { required: true, message: t('uiAutomation.element.rules.locatorRequired'), trigger: 'blur' },
+    { min: 1, max: 500, message: t('uiAutomation.element.rules.locatorLength'), trigger: 'blur' }
   ]
 }))
 
@@ -600,16 +634,21 @@ const loadElementTree = async () => {
     console.log('页面ID列表:', pageIds)
 
     // 将元素添加到对应页面下
+    const attachedElementIds = new Set()
+
     const attachElementsToPages = (pages) => {
       pages.forEach(page => {
         // 找到属于当前页面的元素
         const pageElements = elements.filter(element => element.group_id === page.id)
         console.log(`页面 ${page.name} (ID: ${page.id}) 找到 ${pageElements.length} 个关联元素`, pageElements)
 
-        const elementNodes = pageElements.map(element => ({
-          ...element,
-          type: 'element'
-        }))
+        const elementNodes = pageElements.map(element => {
+          attachedElementIds.add(element.id)
+          return {
+            ...element,
+            type: 'element'
+          }
+        })
 
         // 将元素添加到页面的子节点中
         page.children = page.children ? [...page.children, ...elementNodes] : [...elementNodes]
@@ -623,6 +662,37 @@ const loadElementTree = async () => {
     }
 
     attachElementsToPages(pageNodes)
+
+    // 添加未关联页面的元素到"未关联页面"节点
+    // 包括：1. group_id 为 null/undefined 的元素
+    //       2. group_id 指向的页面不存在的元素
+    const unassignedElements = elements.filter(element => {
+      // 如果没有group_id，肯定是未关联的
+      if (!element.group_id) {
+        return true
+      }
+      // 如果有group_id但没有被添加到任何页面（页面不存在），也算未关联
+      return !attachedElementIds.has(element.id)
+    })
+
+    console.log('未关联页面的元素:', unassignedElements)
+
+    if (unassignedElements.length > 0) {
+      const unassignedPage = {
+        id: 'unassigned',
+        name: '未关联页面',
+        type: 'page',
+        children: unassignedElements.map(element => ({
+          ...element,
+          type: 'element'
+        }))
+      }
+      pageNodes.unshift(unassignedPage) // 添加到列表最前面
+      console.log(`已添加 ${unassignedElements.length} 个未关联元素到"未关联页面"节点`)
+      // 默认展开未关联页面节点
+      expandedKeys.value.push('unassigned')
+    }
+
     console.log('最终treeData:', pageNodes)
     treeData.value = pageNodes
 
@@ -683,6 +753,38 @@ const createEmptyElement = () => {
     force_action: false,  // 强制操作选项，默认禁用
     description: ''
   }
+}
+
+// 验证单个字段（用于失焦验证）
+const validateField = async (field) => {
+  if (!elementFormRef.value) return
+  try {
+    await elementFormRef.value.validateField(field)
+  } catch (error) {
+    // 验证失败，不需要做任何处理，错误会自动显示
+  }
+}
+
+// 验证头部表单字段（元素名称）
+const validateHeaderField = async (field) => {
+  if (!elementHeaderFormRef.value) return
+  try {
+    await elementHeaderFormRef.value.validateField(field)
+  } catch (error) {
+    // 验证失败，不需要做任何处理，错误会自动显示
+  }
+}
+
+// 验证整个元素表单
+const validateElementForm = async () => {
+  const results = await Promise.allSettled([
+    elementHeaderFormRef.value?.validate() ?? Promise.resolve(),
+    elementFormRef.value?.validate() ?? Promise.resolve()
+  ])
+
+  // 检查是否有验证失败的情况
+  const hasFailed = results.some(result => result.status === 'rejected')
+  return !hasFailed
 }
 
 // 创建页面
@@ -796,6 +898,13 @@ const onNodeCollapse = (data) => {
 // 保存元素
 const saveElement = async () => {
   if (!selectedElement.value) return
+
+  // 验证表单
+  const isValid = await validateElementForm()
+  if (!isValid) {
+    ElMessage.error(t('uiAutomation.element.messages.saveFailed'))
+    return
+  }
 
   try {
     saving.value = true
@@ -1019,6 +1128,12 @@ const addContextElement = () => {
 
   // 如果右键点击的是页面节点，设置元素的页面
   if (rightClickedNode.value && rightClickedNode.value.type === 'page') {
+    // 特殊处理：如果是"未关联页面"节点，不设置page和group_id
+    if (rightClickedNode.value.id === 'unassigned') {
+      console.log('在未关联页面节点下添加元素，不设置page和group_id')
+      return
+    }
+
     if (selectedElement.value) {
       selectedElement.value.page = rightClickedNode.value.name
       // 同时设置group_id，确保元素能正确关联到页面
@@ -1031,6 +1146,13 @@ const addContextElement = () => {
 const addSubPage = () => {
   console.log('Add sub page clicked')
   showContextMenu.value = false
+
+  // 禁止在"未关联页面"节点下创建子页面
+  if (rightClickedNode.value && rightClickedNode.value.id === 'unassigned') {
+    ElMessage.warning('未关联页面节点下不能创建子页面')
+    return
+  }
+
   showCreatePageDialog.value = true
 
   // 如果右键点击的是页面节点，设置父页面
@@ -1051,6 +1173,12 @@ const editNode = async () => {
 
   console.log('Editing node:', rightClickedNode.value)
   console.log('Node type:', rightClickedNode.value.type)
+
+  // 禁止编辑"未关联页面"节点
+  if (rightClickedNode.value.id === 'unassigned') {
+    ElMessage.warning('未关联页面节点不能编辑')
+    return
+  }
 
   if (rightClickedNode.value.type === 'page') {
     // 编辑页面
@@ -1089,6 +1217,12 @@ const deleteNode = async () => {
   showContextMenu.value = false
 
   if (!rightClickedNode.value) return
+
+  // 禁止删除"未关联页面"节点
+  if (rightClickedNode.value.id === 'unassigned') {
+    ElMessage.warning('未关联页面节点不能删除')
+    return
+  }
 
   try {
     await ElMessageBox.confirm(
