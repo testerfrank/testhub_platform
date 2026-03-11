@@ -17,6 +17,186 @@ from langchain_openai import ChatOpenAI
 # 加载环境变量
 load_dotenv()
 
+TASK_STATUS_ACTIONS = {'mark_task_complete', 'mark_task_failed', 'mark_task_skipped'}
+
+
+def _normalize_action_params(action_name, action_params):
+    """Normalize common LLM-generated action parameter variants to browser-use schema."""
+    if isinstance(action_params, int):
+        if action_name in TASK_STATUS_ACTIONS:
+            return {'task_id': action_params}
+        return {'index': action_params}
+
+    if action_name == 'switch_tab' and isinstance(action_params, str) and not isinstance(action_params, dict):
+        return {'tab_id': action_params}
+
+    if not isinstance(action_params, dict):
+        return action_params
+
+    normalized_params = {}
+    for key, value in action_params.items():
+        normalized_key = key
+        if key in {'element_index', 'element_id', 'node_id', 'id'} and action_name not in TASK_STATUS_ACTIONS:
+            normalized_key = 'index'
+        elif key in {'tab', 'target', 'target_id'} and action_name in {'switch_tab', 'switch'}:
+            normalized_key = 'tab_id'
+        elif key in {'content', 'value'} and action_name in {'input', 'input_text'}:
+            normalized_key = 'text'
+        normalized_params[normalized_key] = value
+    return normalized_params
+
+
+def _is_terminal_status_action(action_name, action_params):
+    if action_name in TASK_STATUS_ACTIONS:
+        return True
+    if action_name != 'update_task_status' or not isinstance(action_params, dict):
+        return False
+    return str(action_params.get('status', '')).strip().lower() in {'completed', 'failed', 'skipped'}
+
+
+def _enforce_single_task_step(actions):
+    """
+    Enforce single-task-per-step:
+    once a terminal task status action appears, discard any later business actions.
+    """
+    if not isinstance(actions, list):
+        return actions
+
+    trimmed_actions = []
+    terminal_seen = False
+    dropped_count = 0
+
+    for action in actions:
+        if not isinstance(action, dict):
+            trimmed_actions.append(action)
+            continue
+
+        if terminal_seen:
+            dropped_count += 1
+            continue
+
+        trimmed_actions.append(action)
+        for action_name, action_params in action.items():
+            if _is_terminal_status_action(action_name, action_params):
+                terminal_seen = True
+                break
+            if action_name == 'done':
+                terminal_seen = True
+                break
+
+    if dropped_count:
+        logger.warning(
+            f"⚠️ Enforced single-task step boundary: dropped {dropped_count} action(s) after terminal status update"
+        )
+
+    return trimmed_actions
+
+
+def _get_task_status_action_task_id(action):
+    if not isinstance(action, dict):
+        return None
+
+    for action_name, action_params in action.items():
+        if action_name in TASK_STATUS_ACTIONS and isinstance(action_params, dict):
+            return action_params.get('task_id')
+        if action_name == 'update_task_status' and isinstance(action_params, dict):
+            status = str(action_params.get('status', '')).strip().lower()
+            if status in {'completed', 'failed', 'skipped'}:
+                return action_params.get('task_id')
+    return None
+
+
+def _has_real_business_action(action):
+    if not isinstance(action, dict):
+        return False
+    return any(
+        action_name not in {'mark_task_complete', 'mark_task_failed', 'mark_task_skipped', 'update_task_status', 'done'}
+        for action_name in action.keys()
+    )
+
+
+def _extract_task_literals(task_description):
+    if not task_description:
+        return []
+
+    text = str(task_description)
+    literals = []
+    literals.extend(re.findall(r'「([^」]+)」', text))
+    literals.extend(re.findall(r'"([^"\n]+)"', text))
+    literals.extend(re.findall(r"'([^'\n]+)'", text))
+    literals.extend(re.findall(r'https?://[^\s]+', text))
+    literals.extend(re.findall(r'\b\d{1,2}/\d{1,2}/\d{2,4}\b', text))
+
+    deduped = []
+    for item in literals:
+        cleaned = str(item).strip()
+        if cleaned and cleaned not in deduped:
+            deduped.append(cleaned)
+    return deduped
+
+
+def _action_matches_pending_task(action, pending_task_description):
+    if not isinstance(action, dict):
+        return False
+
+    literals = _extract_task_literals(pending_task_description)
+    if not literals:
+        return False
+
+    action_payload = json.dumps(action, ensure_ascii=False)
+    return any(literal in action_payload for literal in literals)
+
+
+def _enforce_pending_status_settlement(actions, pending_task_id, pending_task_description=None):
+    """
+    If the previous step executed a task but forgot to mark it, the next step must settle
+    that pending task status first and must not start the following business task in the same step.
+    """
+    if not pending_task_id or not isinstance(actions, list):
+        return actions
+
+    marked_pending_task = any(
+        str(_get_task_status_action_task_id(action)) == str(pending_task_id)
+        for action in actions
+    )
+    has_real_action = any(_has_real_business_action(action) for action in actions)
+
+    if not (marked_pending_task and has_real_action):
+        return actions
+
+    real_actions = [action for action in actions if _has_real_business_action(action)]
+    if pending_task_description and any(
+        _action_matches_pending_task(action, pending_task_description)
+        for action in real_actions
+    ):
+        return actions
+
+    settled_actions = [
+        action for action in actions
+        if str(_get_task_status_action_task_id(action)) == str(pending_task_id)
+    ]
+
+    if settled_actions:
+        logger.warning(
+            f"⚠️ Settling pending task {pending_task_id} first: dropped business actions from the same step"
+        )
+        return settled_actions
+
+    return actions
+
+
+def _contains_auth_failure_signal(text):
+    if not text:
+        return False
+
+    normalized = str(text).lower()
+    keywords = [
+        '登录失败', 'login failed', 'invalid credentials', 'incorrect password',
+        '用户名或密码', '账号或密码', 'authentication failed', 'auth failed',
+        'bad credentials', 'unauthorized', '401', '403'
+    ]
+    return any(keyword in normalized for keyword in keywords)
+
 # ============================================================================
 # PART 1: Common Patches (Pydantic, ActionModel, TokenCost, Basic Connection)
 # ============================================================================
@@ -114,7 +294,7 @@ try:
                 if re.match(thinking_pattern, content_text, re.DOTALL):
                     content_text = re.sub(thinking_pattern, '', content_text, count=1, flags=re.DOTALL)
                     logger.info("🔧 Fixed: removed leading <thinking> block from response")
-                
+
                 content_dict = json_module.loads(content_text)
 
                 # 规范化 action 字典
@@ -129,62 +309,59 @@ try:
                                 action_name = match.group(1)
                                 params_str = match.group(2)
                                 # 解析参数
-                                if action_name == 'mark_task_complete':
+                                if action_name in TASK_STATUS_ACTIONS:
                                     task_id_match = re.search(r'task_id=(\d+)', params_str)
                                     if task_id_match:
                                         normalized_actions.append({action_name: {'task_id': int(task_id_match.group(1))}})
                                         logger.info(f"🔧 Fixed: parsed string action '{action_dict}'")
+                                elif action_name == 'update_task_status':
+                                    task_id_match = re.search(r'task_id=(\d+)', params_str)
+                                    status_match = re.search(r"status=['\"]?(\w+)['\"]?", params_str)
+                                    if task_id_match and status_match:
+                                        normalized_actions.append({
+                                            action_name: {
+                                                'task_id': int(task_id_match.group(1)),
+                                                'status': status_match.group(1)
+                                            }
+                                        })
+                                        logger.info(f"🔧 Fixed: parsed string action '{action_dict}'")
                                 elif action_name == 'done':
                                     normalized_actions.append({'done': {}})
                             continue
-                        
+
                         normalized_action = {}
                         for action_name, action_params in action_dict.items():
-                            # 自动修复: 将 int 参数转换为对应的参数字典
-                            if isinstance(action_params, int):
-                                # mark_task_complete 需要转换为 {'task_id': value}
-                                if action_name == 'mark_task_complete':
-                                    normalized_action[action_name] = {'task_id': action_params}
-                                else:
-                                    # 其他操作转换为 {'index': value}
-                                    normalized_action[action_name] = {'index': action_params}
-                            # 自动修复: switch_tab 的 tab_id 字符串参数
-                            elif action_name == 'switch_tab' and isinstance(action_params, str) and not isinstance(
-                                    action_params, dict):
-                                normalized_action[action_name] = {'tab_id': action_params}
-                            elif isinstance(action_params, dict):
-                                normalized_params = {}
-                                for k, v in action_params.items():
-                                    if k == 'element_index':
-                                        normalized_params['index'] = v
-                                    else:
-                                        normalized_params[k] = v
-                                normalized_action[action_name] = normalized_params
+                            normalized_value = _normalize_action_params(action_name, action_params)
                             # 忽略无效的字符串参数（如 {"click": "保存"}）
-                            elif isinstance(action_params, str) and action_name not in ['done']:
-                                logger.warning(f"⚠️ Invalid action format: {action_name}: {action_params}, skipping")
+                            if isinstance(normalized_value, str) and action_name not in ['done', 'switch_tab']:
+                                logger.warning(f"⚠️ Invalid action format: {action_name}: {normalized_value}, skipping")
                                 continue
-                            else:
-                                normalized_action[action_name] = action_params
+                            normalized_action[action_name] = normalized_value
                         if normalized_action:  # 只添加非空的 action
                             normalized_actions.append(normalized_action)
-                    content_dict['action'] = normalized_actions
-                
+                    normalized_actions = _enforce_single_task_step(normalized_actions)
+                    pending_task_id = getattr(self, '_pending_status_task_id', None)
+                    pending_task_description = getattr(self, '_pending_status_task_description', None)
+                    content_dict['action'] = _enforce_pending_status_settlement(
+                        normalized_actions,
+                        pending_task_id,
+                        pending_task_description
+                    )
+
                 # 检查 action 数组外部的 mark_task_complete（错误格式）
                 # 如果存在，将其添加到 action 数组中
-                if 'mark_task_complete' in content_dict and isinstance(content_dict['mark_task_complete'], dict):
-                    task_id = content_dict['mark_task_complete'].get('task_id')
-                    if task_id:
-                        if 'action' not in content_dict:
-                            content_dict['action'] = []
-                        content_dict['action'].append({'mark_task_complete': {'task_id': task_id}})
-                        logger.info(f"🔧 Fixed: moved mark_task_complete(task_id={task_id}) into action array")
-                elif 'mark_task_complete' in content_dict and isinstance(content_dict['mark_task_complete'], int):
-                    task_id = content_dict['mark_task_complete']
+                for action_name in [*TASK_STATUS_ACTIONS, 'update_task_status']:
+                    if action_name not in content_dict:
+                        continue
                     if 'action' not in content_dict:
                         content_dict['action'] = []
-                    content_dict['action'].append({'mark_task_complete': {'task_id': task_id}})
-                    logger.info(f"🔧 Fixed: converted mark_task_complete({task_id}) to proper format and added to action array")
+                    if isinstance(content_dict[action_name], dict):
+                        content_dict['action'].append({action_name: content_dict[action_name]})
+                        logger.info(f"🔧 Fixed: moved {action_name} into action array")
+                    elif isinstance(content_dict[action_name], int) and action_name in TASK_STATUS_ACTIONS:
+                        task_id = content_dict[action_name]
+                        content_dict['action'].append({action_name: {'task_id': task_id}})
+                        logger.info(f"🔧 Fixed: converted {action_name}({task_id}) to proper format and added to action array")
 
                 parsed = AgentOutput.model_construct(
                     thinking=content_dict.get('thinking'),
@@ -339,13 +516,7 @@ try:
                     self._dict = {}
                     for k, v in action_dict.items():
                         if isinstance(v, dict):
-                            norm = {}
-                            for subk, subv in v.items():
-                                if subk == 'element_index':
-                                    norm['index'] = subv
-                                else:
-                                    norm[subk] = subv
-                            self._dict[k] = norm
+                            self._dict[k] = _normalize_action_params(k, v)
                         else:
                             self._dict[k] = v
                     for k, v in self._dict.items(): setattr(self, k, v)
@@ -371,51 +542,56 @@ try:
                             action_name = match.group(1)
                             params_str = match.group(2)
                             # 解析参数
-                            if action_name == 'mark_task_complete':
+                            if action_name in TASK_STATUS_ACTIONS:
                                 task_id_match = re.search(r'task_id=(\d+)', params_str)
                                 if task_id_match:
                                     normalized_actions.append({action_name: {'task_id': int(task_id_match.group(1))}})
                                     logger.info(f"🔧 Fixed in TokenCost: parsed string action '{action_dict}'")
+                            elif action_name == 'update_task_status':
+                                task_id_match = re.search(r'task_id=(\d+)', params_str)
+                                status_match = re.search(r"status=['\"]?(\w+)['\"]?", params_str)
+                                if task_id_match and status_match:
+                                    normalized_actions.append({
+                                        action_name: {
+                                            'task_id': int(task_id_match.group(1)),
+                                            'status': status_match.group(1)
+                                        }
+                                    })
+                                    logger.info(f"🔧 Fixed in TokenCost: parsed string action '{action_dict}'")
                             elif action_name == 'done':
                                 normalized_actions.append({'done': {}})
                         continue
-                    
+
                     normalized_action = {}
                     for action_name, action_params in action_dict.items():
-                        if isinstance(action_params, dict):
-                            normalized_params = {}
-                            for k, v in action_params.items():
-                                if k == 'element_index':
-                                    normalized_params['index'] = v
-                                else:
-                                    normalized_params[k] = v
-                            normalized_action[action_name] = normalized_params
-                        elif isinstance(action_params, int):
-                            # 处理整数参数：mark_task_complete 需要 task_id，其他需要 index
-                            if action_name == 'mark_task_complete':
-                                normalized_action[action_name] = {'task_id': action_params}
-                            else:
-                                normalized_action[action_name] = {'index': action_params}
+                        normalized_value = _normalize_action_params(action_name, action_params)
                         # 忽略无效的字符串参数（如 {"click": "保存"}）
-                        elif isinstance(action_params, str) and action_name not in ['done']:
-                            logger.warning(f"⚠️ Invalid action format in TokenCost: {action_name}: {action_params}, skipping")
+                        if isinstance(normalized_value, str) and action_name not in ['done', 'switch_tab']:
+                            logger.warning(f"⚠️ Invalid action format in TokenCost: {action_name}: {normalized_value}, skipping")
                             continue
-                        else:
-                            normalized_action[action_name] = action_params
+                        normalized_action[action_name] = normalized_value
                     if normalized_action:  # 只添加非空的 action
                         normalized_actions.append(normalized_action)
-                parsed_data['action'] = normalized_actions
+                normalized_actions = _enforce_single_task_step(normalized_actions)
+                pending_task_id = getattr(llm, '_pending_status_task_id', None)
+                pending_task_description = getattr(llm, '_pending_status_task_description', None)
+                parsed_data['action'] = _enforce_pending_status_settlement(
+                    normalized_actions,
+                    pending_task_id,
+                    pending_task_description
+                )
 
                 # 检查 action 数组外部的 mark_task_complete（错误格式）
-                if 'mark_task_complete' in parsed_data:
-                    task_id = None
-                    if isinstance(parsed_data['mark_task_complete'], dict):
-                        task_id = parsed_data['mark_task_complete'].get('task_id')
-                    elif isinstance(parsed_data['mark_task_complete'], int):
-                        task_id = parsed_data['mark_task_complete']
-                    if task_id:
-                        parsed_data['action'].append({'mark_task_complete': {'task_id': task_id}})
-                        logger.info(f"🔧 Fixed in TokenCost: moved mark_task_complete(task_id={task_id}) into action array")
+                for action_name in [*TASK_STATUS_ACTIONS, 'update_task_status']:
+                    if action_name not in parsed_data:
+                        continue
+                    if isinstance(parsed_data[action_name], dict):
+                        parsed_data['action'].append({action_name: parsed_data[action_name]})
+                        logger.info(f"🔧 Fixed in TokenCost: moved {action_name} into action array")
+                    elif isinstance(parsed_data[action_name], int) and action_name in TASK_STATUS_ACTIONS:
+                        task_id = parsed_data[action_name]
+                        parsed_data['action'].append({action_name: {'task_id': task_id}})
+                        logger.info(f"🔧 Fixed in TokenCost: moved {action_name}(task_id={task_id}) into action array")
 
                 try:
                     from browser_use.agent.message_manager.service import AgentOutput
@@ -569,17 +745,11 @@ try:
             else:
                 params = {'value': params} if params else {}
 
-        # 🔧 修复 input action 的参数格式：将 content/value 转换为 text
-        # 适配不同LLM模型生成的参数格式
-        if action_name in ['input', 'input_text'] and isinstance(params, dict):
-            # 检查是否有 content 或 value 字段，转换为 text
-            if 'text' not in params:
-                if 'content' in params:
-                    params['text'] = params.pop('content')
-                    logger.info(f"🔧 Converted 'content' -> 'text' for input action: {params.get('index', '?')}")
-                elif 'value' in params:
-                    params['text'] = params.pop('value')
-                    logger.info(f"🔧 Converted 'value' -> 'text' for input action: {params.get('index', '?')}")
+        if isinstance(params, dict):
+            normalized_params = _normalize_action_params(action_name, params)
+            if normalized_params != params:
+                logger.info(f"🔧 Normalized action params for {action_name}: {params} -> {normalized_params}")
+            params = normalized_params
 
         # 针对点击增加延迟，确保 UI 更新 (如弹窗弹出、下拉框展开)
         if action_name in ['click_element', 'click']:
@@ -760,6 +930,7 @@ class RawResponseLogger(BaseCallbackHandler):
 # ============================================================================
 
 from browser_use import Agent, Controller
+from browser_use.browser.events import CloseTabEvent, SwitchTabEvent
 from browser_use.browser.profile import BrowserProfile
 
 
@@ -878,6 +1049,8 @@ class BaseBrowserAgent:
                 elif name == 'open_new_tab':
                     url = params.get('url', params)
                     descriptions.append(f"新标签打开: {url}")
+                elif name == 'close_tab':
+                    descriptions.append("关闭当前标签页")
                 elif name == 'done':
                     descriptions.append("任务完成")
                 else:
@@ -886,43 +1059,292 @@ class BaseBrowserAgent:
         except:
             return "执行操作"
 
+    async def _verify_execution_llm(self):
+        """在真正启动执行前做一次轻量连通性检查，避免浏览器启动后反复空转失败。"""
+        try:
+            await asyncio.wait_for(
+                self.llm.ainvoke("Reply with OK."),
+                timeout=20.0
+            )
+        except Exception as e:
+            raise RuntimeError(f"Execution LLM unavailable: {e}") from e
+
+    def _extract_structured_steps(self, text: str):
+        """从原始任务文本中稳定提取步骤，作为 LLM 拆分失败时的兜底。"""
+        if not text:
+            return []
+
+        normalized_text = str(text).replace('\r\n', '\n').replace('\r', '\n').strip()
+        if not normalized_text:
+            return []
+
+        # 优先按行解析显式编号步骤
+        numbered_line_pattern = re.compile(r'^\s*(\d+(?:\.\d+)*)[\.\s、:：-]+(.*)$')
+        extracted_steps = []
+        plain_lines = []
+
+        for raw_line in normalized_text.split('\n'):
+            line = raw_line.strip()
+            if not line:
+                continue
+            match = numbered_line_pattern.match(line)
+            if match:
+                desc = match.group(2).strip()
+                if desc:
+                    extracted_steps.append(desc)
+            else:
+                plain_lines.append(line)
+
+        if extracted_steps:
+            if len(extracted_steps) == 1 and '\n' not in normalized_text:
+                split_inline_text = re.sub(
+                    r'\s+(?=\d+(?:\.\d+)*[\.\s、:：-]+)',
+                    '\n',
+                    normalized_text
+                )
+                if split_inline_text != normalized_text:
+                    inline_steps = self._extract_structured_steps(split_inline_text)
+                    if len(inline_steps) > 1:
+                        return inline_steps
+            return extracted_steps
+
+        # 其次解析单行内多个编号步骤，例如：
+        # "1.访问xx 2.搜索xx 3.点击xx"
+        split_inline_text = re.sub(
+            r'\s+(?=\d+(?:\.\d+)*[\.\s、:：-]+)',
+            '\n',
+            normalized_text
+        )
+        if split_inline_text != normalized_text:
+            inline_steps = self._extract_structured_steps(split_inline_text)
+            if inline_steps:
+                return inline_steps
+
+        # 最后退化为逐行文本
+        return plain_lines or [normalized_text]
+
+    def _normalize_steps(self, raw_steps, fallback_text: str):
+        """清洗并展开步骤列表，避免多步被合并成一条。"""
+        steps = raw_steps if isinstance(raw_steps, list) else []
+        normalized_steps = []
+
+        for step in steps:
+            if step is None:
+                continue
+            desc = str(step).strip()
+            if not desc:
+                continue
+
+            # 如果单个 step 里仍然包含多行/多编号步骤，继续拆开
+            nested_steps = self._extract_structured_steps(desc)
+            if nested_steps and not (len(nested_steps) == 1 and nested_steps[0] == desc):
+                normalized_steps.extend(nested_steps)
+            else:
+                normalized_steps.append(desc)
+
+        if not normalized_steps:
+            normalized_steps = self._extract_structured_steps(fallback_text)
+
+        cleaned_steps = []
+        for desc in normalized_steps:
+            current = str(desc).strip()
+            while True:
+                match = re.match(r'^\s*\d+(?:\.\d+)*[\.\s、:：-]+(.*)', current, re.S)
+                if not match:
+                    break
+                current = match.group(1).strip()
+            if current:
+                cleaned_steps.append(current)
+
+        return cleaned_steps or [fallback_text.strip()]
+
+    def _compact_steps(self, steps):
+        """合并过细的动作级步骤，收敛为核心业务子任务。"""
+        if not steps:
+            return []
+
+        compacted = []
+        i = 0
+        total = len(steps)
+
+        while i < total:
+            current = str(steps[i]).strip()
+            current_lower = current.lower()
+
+            # 合并“打开浏览器 / 输入URL / 回车访问”这一类导航碎步
+            if (
+                ('浏览器' in current or 'browser' in current_lower or '地址栏' in current)
+                and i + 1 < total
+            ):
+                window = " ".join(str(s).strip() for s in steps[i:i + 3])
+                url_match = re.search(r'https?://[^\s]+', window)
+                if url_match:
+                    compacted.append(f"访问{url_match.group(0)}")
+                    i += min(3, total - i)
+                    continue
+
+            # 合并“点击搜索框 / 输入关键词 / 点击搜索 / 等待结果”
+            search_window = " ".join(str(s).strip() for s in steps[i:i + 4])
+            if any(keyword in search_window for keyword in ['搜索框', '关键词', '百度一下', '搜索结果', 'search']):
+                query_match = re.search(r"(?:输入搜索关键词[:：]?\s*|搜索)\s*['\"]?([^'\"\n]+?)['\"]?(?:\s|$)", search_window)
+                if query_match:
+                    query = query_match.group(1).strip()
+                    query = re.sub(r'(并执行搜索|按钮或按下回车键|结果列表加载完成)$', '', query).strip()
+                    compacted.append(f"搜索{query}")
+                    i += min(4, total - i)
+                    continue
+
+            # 合并“点击第N条结果 + 新标签查看详情”
+            if any(keyword in current for keyword in ['搜索结果', '结果', '标题链接', '查看详情']):
+                if any(keyword in current for keyword in ['第二条', '第2条', '详情', '链接']):
+                    compacted.append("点击第2条搜索结果查看详情")
+                    i += 1
+                    continue
+
+            # 合并关闭标签页相关步骤
+            if any(keyword in current for keyword in ['关闭', '标签页', '新标签页', 'close tab']):
+                compacted.append("关闭该标签页")
+                i += 1
+                continue
+
+            compacted.append(current)
+            i += 1
+
+        # 去重并保持顺序
+        deduped = []
+        for step in compacted:
+            if not deduped or deduped[-1] != step:
+                deduped.append(step)
+        return deduped
+
+    def _step_complexity_score(self, step: str) -> int:
+        """粗略评估单个步骤是否包含多个动作。"""
+        text = str(step).strip()
+        if not text:
+            return 0
+
+        score = 0
+        if len(text) >= 24:
+            score += 1
+        if len(text) >= 48:
+            score += 1
+        if any(token in text for token in ['并', '然后', '之后', '再', '并且', '同时', '且']):
+            score += 1
+        if any(token in text for token in ['点击', '输入', '搜索', '选择', '打开', '关闭', '提交', '保存', '查看', '切换']):
+            action_hits = sum(text.count(token) for token in ['点击', '输入', '搜索', '选择', '打开', '关闭', '提交', '保存', '查看', '切换'])
+            if action_hits >= 2:
+                score += 1
+        return score
+
+    def _step_has_specific_requirements(self, step: str) -> bool:
+        """判断步骤是否包含必须保留的字面值、断言或字段约束。"""
+        text = str(step).strip()
+        if not text:
+            return False
+
+        signals = 0
+        if re.search(r'https?://', text):
+            signals += 1
+        if any(token in text for token in ['「', '」', '"', "'"]):
+            signals += 1
+        if re.search(r'\b\d{1,2}/\d{1,2}/\d{2,4}\b', text):
+            signals += 1
+        if re.search(r'\([^)]{2,}\)', text):
+            signals += 1
+        if any(token in text for token in ['标题为', '返回', '确认页面', '确认', '验证', '校验']):
+            signals += 1
+        if any(token in text for token in ['输入框', '按钮', '下拉', '单选', '日期', 'Password', 'Text input', 'Dropdown']):
+            signals += 1
+        return signals >= 2
+
+    def _should_redecompose_explicit_steps(self, steps):
+        """判断已编号任务是否复杂到需要模型二次整合。"""
+        if not steps:
+            return False
+
+        detail_rich_count = sum(1 for step in steps if self._step_has_specific_requirements(step))
+        if detail_rich_count >= max(2, len(steps) // 2):
+            return False
+
+        if len(steps) >= 10:
+            return True
+
+        complex_count = sum(1 for step in steps if self._step_complexity_score(step) >= 2)
+        if complex_count >= max(2, len(steps) // 2):
+            return True
+
+        very_long_count = sum(1 for step in steps if len(str(step).strip()) >= 40)
+        if very_long_count >= max(2, len(steps) // 2):
+            return True
+
+        return False
+
+    async def _model_break_down_task(self, task_description: str, mode: str = 'break_down'):
+        """调用模型拆分或重整任务步骤。"""
+        if mode == 'recompose':
+            prompt = (
+                "You are given a task that already has numbered steps, but some steps may be too granular or redundant. "
+                "Rewrite them into core business steps only. "
+                "Rules: keep the original intent and order, merge mechanical browser operations into the surrounding business step, "
+                "do not invent new goals, do not split into micro-actions like clicking an input box or waiting for page load. "
+                "Preserve every concrete literal requirement from the original steps, including URLs, field labels, option values, dates, expected titles, "
+                "expected result text, and quoted content. Do not replace them with vague phrases like '输入文本信息' or '验证成功'. "
+                "Return JSON list of concise Chinese strings only.\n\n"
+                f"Task:\n{task_description}"
+            )
+        else:
+            prompt = (
+                "Break down this task into core business steps only. "
+                "Avoid micro-actions like opening the browser, clicking into an input box, or waiting for results unless they are the user's explicit goal. "
+                "Preserve every concrete literal requirement from the original task, including URLs, field labels, option values, dates, expected titles, "
+                "expected result text, and quoted content. Do not replace them with vague summaries like '输入文本信息' or '验证成功'. "
+                "Keep the order and return JSON list of concise Chinese strings only.\n\n"
+                f"Task:\n{task_description}"
+            )
+
+        response = await self.llm.ainvoke(prompt)
+        content = response.content.strip() if hasattr(response, 'content') else str(response)
+
+        steps = []
+        try:
+            import json
+            match = re.search(r'(\[.*\])', content, re.DOTALL)
+            if match:
+                steps = json.loads(match.group(1))
+        except Exception:
+            pass
+
+        return steps
+
+    def _finalize_steps(self, steps, fallback_text: str):
+        """统一收口步骤列表，保证输出可执行且尽量精简。"""
+        return self._compact_steps(self._normalize_steps(steps, fallback_text))
+
     async def analyze_task(self, task_description: str):
         try:
-            prompt = f"Break down this task into steps: {task_description}. Return JSON list of strings."
-            response = await self.llm.ainvoke(prompt)
-            content = response.content.strip() if hasattr(response, 'content') else str(response)
+            explicit_steps = self._extract_structured_steps(task_description)
+            if len(explicit_steps) >= 2:
+                if self._should_redecompose_explicit_steps(explicit_steps):
+                    steps = await self._model_break_down_task(task_description, mode='recompose')
+                    cleaned_steps = self._finalize_steps(steps, task_description)
+                else:
+                    cleaned_steps = self._normalize_steps(explicit_steps, task_description)
+                return [{'id': i + 1, 'description': s, 'status': 'pending'} for i, s in enumerate(cleaned_steps)]
 
-            steps = []
-            try:
-                import json
-                match = re.search(r'(\[.*\])', content, re.DOTALL)
-                if match: steps = json.loads(match.group(1))
-            except:
-                pass
-
-            if not steps:
-                steps = [s.strip() for s in task_description.split('\n') if s.strip()]
-
-            # 彻底清理生成的步骤描述中的重复编号
-            cleaned_steps = []
-            for s in steps:
-                desc = s
-                while True:
-                    match = re.match(r'^\s*\d+[\.\s、:]+(.*)', desc)
-                    if not match: break
-                    desc = match.group(1).strip()
-                if desc:
-                    cleaned_steps.append(desc)
+            steps = await self._model_break_down_task(task_description, mode='break_down')
+            cleaned_steps = self._finalize_steps(steps, task_description)
 
             return [{'id': i + 1, 'description': s, 'status': 'pending'} for i, s in enumerate(cleaned_steps)]
-        except:
-            return [{'id': 1, 'description': task_description, 'status': 'pending'}]
+        except Exception as e:
+            logger.warning(f"⚠️ analyze_task fallback triggered: {e}")
+            cleaned_steps = self._finalize_steps([], task_description)
+            return [{'id': i + 1, 'description': s, 'status': 'pending'} for i, s in enumerate(cleaned_steps)]
 
     def _cleanup_zombie_chrome(self):
         """Clean up any existing Chrome processes on port 9222 (Linux only)"""
         import platform
         import psutil
-        
+
         if platform.system() != 'Linux':
             return
 
@@ -943,7 +1365,7 @@ class BaseBrowserAgent:
                     pass
         except Exception as e:
             logger.warning(f"⚠️ Failed to cleanup zombie chrome: {e}")
-        
+
         if cleaned_count > 0:
             logger.info(f"✅ Cleaned up {cleaned_count} zombie Chrome processes")
 
@@ -995,7 +1417,7 @@ class BaseBrowserAgent:
                     chrome_path = p
                     logger.info(f"找到浏览器: {chrome_path}")
                     break
-            
+
             # 如果还是没找到，尝试查找Playwright的默认路径或让browser-use自行安装
             if not chrome_path:
                 import glob
@@ -1008,7 +1430,7 @@ class BaseBrowserAgent:
                         chrome_path = p
                         logger.info(f"通过Playwright找到浏览器: {chrome_path}")
                         break
-                
+
                 # 最后的备用方案：让browser-use自行处理浏览器安装
                 if not chrome_path:
                     logger.info("未找到预装浏览器，将让browser-use自动安装")
@@ -1061,6 +1483,8 @@ class BaseBrowserAgent:
         )
 
     async def run_task(self, task_description: str, planned_tasks=None, callback=None, should_stop=None):
+        await self._verify_execution_llm()
+
         # Cleanup potential zombie processes before starting
         self._cleanup_zombie_chrome()
 
@@ -1071,6 +1495,47 @@ class BaseBrowserAgent:
 
         controller = Controller()
         _task_was_done = False
+        active_task_statuses = {'pending', 'in_progress'}
+
+        async def emit_callback(payload):
+            if not callback:
+                return
+
+            if asyncio.iscoroutinefunction(callback):
+                await callback(payload)
+            else:
+                callback(payload)
+
+        def is_placeholder_url(url: str) -> bool:
+            normalized = (url or '').strip().lower()
+            return (
+                not normalized
+                or normalized == 'about:blank'
+                or normalized.startswith('chrome://newtab')
+                or normalized.startswith('edge://newtab')
+            )
+
+        def is_close_step(description: str) -> bool:
+            text = str(description or '').strip()
+            return any(keyword in text for keyword in ['关闭', '关闭该标签页', '关闭标签页'])
+
+        def get_next_active_task():
+            if not planned_tasks:
+                return None
+
+            for task in planned_tasks:
+                if task.get('status', 'pending') in active_task_statuses:
+                    return task
+            return None
+
+        async def find_preferred_fallback_tab(browser_session, exclude_target_id=None):
+            tabs = await browser_session.get_tabs()
+            candidate_tabs = [tab for tab in tabs if tab.target_id != exclude_target_id]
+            if not candidate_tabs:
+                return None
+
+            non_placeholder_tabs = [tab for tab in candidate_tabs if not is_placeholder_url(getattr(tab, 'url', ''))]
+            return (non_placeholder_tabs or candidate_tabs)[-1]
 
         @controller.action('Done')
         async def done(success: bool = True, text: str = ""):
@@ -1078,26 +1543,92 @@ class BaseBrowserAgent:
             _task_was_done = True
             return f"Finished: {text}"
 
+        @controller.action('close_tab')
+        async def close_tab(browser_session=None):
+            if browser_session is None or browser_session.agent_focus_target_id is None:
+                raise ValueError("No active tab to close")
+            target_id = browser_session.agent_focus_target_id
+            fallback_tab = None
+            try:
+                fallback_tab = await find_preferred_fallback_tab(browser_session, exclude_target_id=target_id)
+            except Exception as e:
+                logger.warning(f"Failed to determine fallback tab before closing {target_id[-4:]}: {e}")
+
+            event = browser_session.event_bus.dispatch(CloseTabEvent(target_id=target_id))
+            await event
+
+            if fallback_tab is not None:
+                try:
+                    await asyncio.sleep(0.15)
+                    if browser_session.agent_focus_target_id != fallback_tab.target_id:
+                        await browser_session.event_bus.dispatch(
+                            SwitchTabEvent(target_id=fallback_tab.target_id)
+                        )
+                        logger.info(
+                            f"↩️ Switched back to existing tab {fallback_tab.target_id[-4:]} "
+                            f"({fallback_tab.url}) after closing {target_id[-4:]}"
+                        )
+                        await emit_callback({
+                            'type': 'log',
+                            'content': (
+                                f"\n[System]\n关闭标签页后，已切回来源页 {fallback_tab.target_id[-4:]}\n"
+                            )
+                        })
+                except Exception as e:
+                    logger.warning(f"Failed to switch back to preferred tab after closing {target_id[-4:]}: {e}")
+
+            next_active_task = get_next_active_task()
+            if next_active_task and is_close_step(next_active_task.get('description')):
+                logger.info(f"✅ Auto-marking close step task {next_active_task['id']} as completed after close_tab")
+                await emit_callback({'task_id': int(next_active_task['id']), 'status': 'completed'})
+
+            return f"Closed tab {target_id[-4:]}"
+
         @controller.action('mark_task_complete')
         async def mark_task_complete(task_id: int):
             logger.info(f"✅ Explicitly marking task {task_id} as completed")
-            if callback:
-                try:
-                    data = {'task_id': int(task_id), 'status': 'completed'}
-                    if asyncio.iscoroutinefunction(callback):
-                        await callback(data)
-                    else:
-                        callback(data)
-                except Exception as e:
-                    logger.warning(f"Failed to execute mark_task_complete callback: {e}")
+            try:
+                await emit_callback({'task_id': int(task_id), 'status': 'completed'})
+            except Exception as e:
+                logger.warning(f"Failed to execute mark_task_complete callback: {e}")
             return f"Task {task_id} marked completed"
+
+        @controller.action('mark_task_failed')
+        async def mark_task_failed(task_id: int):
+            logger.info(f"❌ Explicitly marking task {task_id} as failed")
+            try:
+                await emit_callback({'task_id': int(task_id), 'status': 'failed'})
+            except Exception as e:
+                logger.warning(f"Failed to execute mark_task_failed callback: {e}")
+            return f"Task {task_id} marked failed"
+
+        @controller.action('mark_task_skipped')
+        async def mark_task_skipped(task_id: int):
+            logger.info(f"⏭️ Explicitly marking task {task_id} as skipped")
+            try:
+                await emit_callback({'task_id': int(task_id), 'status': 'skipped'})
+            except Exception as e:
+                logger.warning(f"Failed to execute mark_task_skipped callback: {e}")
+            return f"Task {task_id} marked skipped"
+
+        @controller.action('update_task_status')
+        async def update_task_status(task_id: int, status: str):
+            normalized_status = str(status).strip().lower()
+            if normalized_status not in {'completed', 'failed', 'skipped', 'in_progress'}:
+                raise ValueError(f"Unsupported task status: {status}")
+            logger.info(f"🔄 Explicitly updating task {task_id} to {normalized_status}")
+            try:
+                await emit_callback({'task_id': int(task_id), 'status': normalized_status})
+            except Exception as e:
+                logger.warning(f"Failed to execute update_task_status callback: {e}")
+            return f"Task {task_id} marked {normalized_status}"
 
         # 构建强化版 Prompt
         final_task = task_description
         if planned_tasks:
             final_task += "\n\nIMPORTANT INSTRUCTION:\n"
             final_task += "You have a list of sub-tasks. Execute strictly in order.\n"
-            final_task += "CRITICAL: MUST call 'mark_task_complete(task_id=...)' IMMEDIATELY after verifying each sub-task completion. NEVER skip this step. For every action you take, there MUST be a corresponding mark_task_complete call.\n"
+            final_task += "CRITICAL: MUST call one of 'mark_task_complete', 'mark_task_failed', 'mark_task_skipped', or 'update_task_status(task_id=..., status=...)' IMMEDIATELY after determining each sub-task result. NEVER skip this step.\n"
             final_task += "IMPORTANT: If a sub-task (like opening a URL) is already fulfilled by the initial state, YOU MUST mark it complete in your VERY FIRST STEP.\n"
             final_task += "Sub-tasks (Execute in order):\n"
             cleaned_tasks = []
@@ -1119,31 +1650,38 @@ class BaseBrowserAgent:
         final_task += "   a) MARK AFTER COMPLETION: Call 'mark_task_complete(task_id=N)' ONLY AFTER you have SUCCESSFULLY COMPLETED task N.\n"
         final_task += "   b) MARK CURRENT TASK: Always mark the task you just completed, NOT the next task or previous tasks.\n"
         final_task += "   c) CHECK TASK ID: Before marking, verify: 'I just completed task N' - if N is already marked, check which task you actually completed.\n"
-        final_task += "   d) DO NOT SKIP: Every click/input/select action MUST be followed by mark_task_complete for that specific task.\n"
-        final_task += "   e) EXAMPLE: If task 4 is 'click version management', action should be [{click: {...}}, {mark_task_complete: {task_id: 4}}]\n"
-        final_task += "   f) NO PRE-MARKING: Never mark a task before completing it. Never mark a task twice.\n"
+        final_task += "   d) DO NOT SKIP: Every sub-task must end with an explicit terminal status update: completed, failed, or skipped.\n"
+        final_task += "   e) EXAMPLE SUCCESS: [{click: {...}}, {mark_task_complete: {task_id: 4}}]\n"
+        final_task += "   f) EXAMPLE FAILURE: if task 4 cannot be completed after verification, call {mark_task_failed: {task_id: 4}}.\n"
+        final_task += "   g) EXAMPLE SKIP: if task 4 is intentionally unnecessary, call {mark_task_skipped: {task_id: 4}}.\n"
+        final_task += "   h) NO PRE-MARKING: Never mark a task before completing it. Never mark a task twice.\n"
+        final_task += "   i) SINGLE-TASK STEP: If you mark task N in the current step, STOP there. Do NOT start task N+1 in the same step.\n"
+        final_task += "   j) FORM EXAMPLE: Good: [{input: {...}}, {mark_task_complete: {task_id: 2}}] then next step handles task 3. Bad: [{mark_task_complete: {task_id: 1}}, {input: {...task 2...}}].\n"
         final_task += "2. NO JAVASCRIPT IN INPUT: When a task asks for a timestamp, YOU MUST compute the final string yourself (e.g., 'V8.01734892400').\n"
         final_task += "   - DO NOT output 'Date.now()' or '{{...}}' strings. Use the CURRENT TIME provided above to estimate a timestamp.\n"
         final_task += "3. DROPDOWN & MODAL ISOLATION: If an action (clicking a button/dropdown) triggers a UI change (modal opens/dropdown expands), YOU MUST STOP and WAIT for the next step to see the new elements. DO NOT attempt to interact with newly appeared elements (like dropdown options) in the same step as the click that opened them.\n"
-        final_task += "4. ULTRALIGHT THINKING: Keep 'thinking' under 10 words. Just list next actions. Merge multiple INPUTS if they are on the same form, but NEVER merge a UI-opening click with its subsequent interaction. SPEED IS CRITICAL - respond as quickly as possible.\n"
-        final_task += "5. FORM VALIDATION & ERROR DETECTION: When filling forms, you MUST:\n"
+        final_task += "4. TAB HANDLING: If clicking a link/result opens a new tab, DO NOT click the same result again. Immediately switch to the newest tab, verify the detail page there, then mark the current sub-task complete.\n"
+        final_task += "5. ULTRALIGHT THINKING: Keep 'thinking' under 10 words. Just list next actions. Merge multiple INPUTS if they are on the same form, but NEVER merge a UI-opening click with its subsequent interaction. SPEED IS CRITICAL - respond as quickly as possible.\n"
+        final_task += "6. FORM VALIDATION & ERROR DETECTION: When filling forms, you MUST:\n"
         final_task += "   a) Check for RED TEXT messages (validation errors) before clicking save/submit\n"
         final_task += "   b) If validation errors exist, COMPLETE ALL MISSING FIELDS first, then retry save\n"
         final_task += "   c) NEVER close a dialog/modal if there are validation errors - complete the form instead\n"
         final_task += "   d) Verify all required fields are filled before attempting to save\n"
         final_task += "   e) Common validation errors: missing required fields (red asterisk or red text), invalid format, etc.\n"
-        final_task += "6. RETRY LOGIC: If a previous 'save' or 'submit' failed (e.g., error toast or validation error):\n"
+        final_task += "7. RETRY LOGIC: If a previous 'save' or 'submit' failed (e.g., error toast or validation error):\n"
         final_task += "   a) STOP and examine the page for validation errors (red text, error messages)\n"
         final_task += "   b) RE-VERIFY all fields - check dropdowns are actually selected, not just clicked\n"
         final_task += "   c) Re-select dropdowns and re-input text to ensure the form is complete\n"
         final_task += "   d) DO NOT close the dialog - stay and complete all missing fields\n"
         final_task += "   e) Often errors are caused by: missing project selection, unfilled required fields, incorrect format\n"
-        final_task += "7. DO NOT REPEAT: If a task is complete, mark it and MOVE ON. Don't re-confirm unless the system requires it.\n"
-        final_task += "8. VERIFICATION: Task 15/16 usually require checking the list. Ensure you are on the correct page and the new data is visible before marking complete.\n"
-        final_task += "9. ELEMENT IDENTIFICATION: Carefully identify elements before clicking. AVOID clicking 'close' or 'cancel' buttons when filling forms. Check button labels, aria-labels, and icons to ensure you're clicking the correct element.\n"
+        final_task += "8. DO NOT REPEAT: If a task is complete, mark it and MOVE ON. Never click the same search result or link twice unless you verified the first click failed.\n"
+        final_task += "9. VERIFICATION: Task 15/16 usually require checking the list. Ensure you are on the correct page and the new data is visible before marking complete.\n"
+        final_task += "10. ELEMENT IDENTIFICATION: Carefully identify elements before clicking. AVOID clicking 'close' or 'cancel' buttons when filling forms. Check button labels, aria-labels, and icons to ensure you're clicking the correct element.\n"
+        final_task += "11. ACTION PARAM FORMAT: For browser actions, always use browser-use native parameter names. Use 'index' for click/input/select actions, use 'text' for typed content, and never use aliases like 'element_id'.\n"
+        final_task += "12. CREDENTIALS RULE: NEVER invent, replace, or guess credentials. Only use the username/password explicitly provided in the task. If login keeps failing with an explicit error like '登录失败' or '用户名或密码错误', stop retrying after a small number of attempts and mark the current login task as failed.\n"
 
         if 'qwen' in self.model_name.lower() or 'deepseek' in self.model_name.lower():
-            final_task += "10. EXTREMELY MINIMIZE output tokens for speed. Keep responses as short as possible while maintaining accuracy.\n"
+            final_task += "13. EXTREMELY MINIMIZE output tokens for speed. Keep responses as short as possible while maintaining accuracy.\n"
 
         # 核心修复: 清理 task 长文本中的 URL，防止中文标点紧贴 URL 导致 browser-use 解析错误
         # 例如 "http://localhost:3000，" -> "http://localhost:3000 "
@@ -1170,13 +1708,18 @@ class BaseBrowserAgent:
             generate_gif=self.enable_gif,  # 根据开关决定是否生成GIF
         )
         agent._task_was_done = False
+        agent._pending_status_task_id = None
+        agent._pending_status_task_description = None
+        agent._auth_failure_task_id = None
+        agent._auth_failure_count = 0
 
         # Callback helper - 添加任务标记跟踪
         last_processed_step = 0
         last_marked_task_id = 0  # 跟踪上一次标记的任务ID
+        known_tab_ids = set()
 
         async def on_step_end(agent_instance):
-            nonlocal last_processed_step, last_marked_task_id
+            nonlocal last_processed_step, last_marked_task_id, known_tab_ids
 
             if should_stop:
                 do_stop = await should_stop() if asyncio.iscoroutinefunction(should_stop) else should_stop()
@@ -1198,7 +1741,43 @@ class BaseBrowserAgent:
                             raw = step.model_output.action
                             actions = raw if isinstance(raw, list) else [raw]
 
-                        # 检查这一步是否调用了mark_task_complete
+                        current_active_task = get_next_active_task()
+                        current_active_task_id = current_active_task.get('id') if current_active_task else None
+                        current_active_task_desc = str(current_active_task.get('description', '')) if current_active_task else ''
+                        if current_active_task_id and any(keyword in current_active_task_desc.lower() for keyword in ['登录', 'login']):
+                            signal_text_parts = []
+                            model_output = getattr(step, 'model_output', None)
+                            for field_name in ['thinking', 'evaluation_previous_goal', 'memory', 'next_goal']:
+                                value = getattr(model_output, field_name, None)
+                                if value:
+                                    signal_text_parts.append(str(value))
+
+                            if _contains_auth_failure_signal(" ".join(signal_text_parts)):
+                                if getattr(agent_instance, '_auth_failure_task_id', None) == current_active_task_id:
+                                    agent_instance._auth_failure_count += 1
+                                else:
+                                    agent_instance._auth_failure_task_id = current_active_task_id
+                                    agent_instance._auth_failure_count = 1
+
+                                if agent_instance._auth_failure_count >= 3:
+                                    logger.warning(
+                                        f"⚠️ Login/auth failure threshold reached for task {current_active_task_id}; marking task failed"
+                                    )
+                                    await emit_callback({
+                                        'type': 'log',
+                                        'content': (
+                                            f"\n[System]\n检测到登录连续失败 3 次，已自动将子任务 {current_active_task_id} 标记为失败并停止执行。\n"
+                                        )
+                                    })
+                                    await emit_callback({
+                                        'task_id': int(current_active_task_id),
+                                        'status': 'failed'
+                                    })
+                                    raise KeyboardInterrupt("Repeated authentication failure")
+                            elif getattr(agent_instance, '_auth_failure_task_id', None) == current_active_task_id:
+                                agent_instance._auth_failure_count = 0
+
+                        # 检查这一步是否调用了任务状态更新动作
                         step_has_task_complete = False
                         step_marked_task_id = None
                         for action in actions:
@@ -1208,27 +1787,45 @@ class BaseBrowserAgent:
                             if 'mark_task_complete' in action_dict:
                                 step_has_task_complete = True
                                 step_marked_task_id = action_dict['mark_task_complete'].get('task_id')
+                            elif 'mark_task_failed' in action_dict:
+                                step_has_task_complete = True
+                                step_marked_task_id = action_dict['mark_task_failed'].get('task_id')
+                            elif 'mark_task_skipped' in action_dict:
+                                step_has_task_complete = True
+                                step_marked_task_id = action_dict['mark_task_skipped'].get('task_id')
+                            elif 'update_task_status' in action_dict:
+                                step_has_task_complete = True
+                                payload = action_dict['update_task_status']
+                                step_marked_task_id = payload.get('task_id')
+
+                            if step_has_task_complete:
                                 # 检查是否重复标记已完成的任务 - 提示但不自动修复
                                 if planned_tasks:
                                     for task in planned_tasks:
-                                        if task['id'] == step_marked_task_id and task.get('status') == 'completed':
+                                        if task['id'] == step_marked_task_id and task.get('status') in ['completed', 'failed', 'skipped']:
                                             next_expected = last_marked_task_id + 1
                                             logger.warning(
-                                                f"⚠️ Task {step_marked_task_id} is already completed! "
+                                                f"⚠️ Task {step_marked_task_id} is already terminal ({task.get('status')})! "
                                                 f"You should mark task {next_expected} instead.")
                                             break
                                 last_marked_task_id = step_marked_task_id
+                                if getattr(agent_instance, '_pending_status_task_id', None) == step_marked_task_id:
+                                    agent_instance._pending_status_task_id = None
+                                    agent_instance._pending_status_task_description = None
                                 break
 
                         # 检查这一步是否有实际操作（非mark_task_complete的操作）
                         has_real_action = False
+                        has_link_open_action = False
                         for action in actions:
                             action_dict = action.model_dump() if hasattr(action, 'model_dump') else getattr(action,
                                                                                                             '_action_dict',
                                                                                                             {})
                             for key in action_dict.keys():
-                                if key not in ['mark_task_complete', 'done']:
+                                if key not in ['mark_task_complete', 'mark_task_failed', 'mark_task_skipped', 'update_task_status', 'done']:
                                     has_real_action = True
+                                if key in ['click', 'open_new_tab', 'navigate', 'go_to_url']:
+                                    has_link_open_action = True
                                     break
                             if has_real_action:
                                 break
@@ -1241,6 +1838,36 @@ class BaseBrowserAgent:
                                 await callback({'type': 'log', 'content': log_content})
                             else:
                                 callback({'type': 'log', 'content': log_content})
+
+                        browser_session = getattr(agent_instance, 'browser_session', None)
+                        if browser_session is not None:
+                            try:
+                                tabs = await browser_session.get_tabs()
+                                current_tab_ids = {tab.target_id for tab in tabs}
+                                if not known_tab_ids:
+                                    known_tab_ids = current_tab_ids
+                                else:
+                                    new_tabs = [tab for tab in tabs if tab.target_id not in known_tab_ids]
+                                    if new_tabs and has_link_open_action:
+                                        newest_tab = new_tabs[-1]
+                                        if browser_session.agent_focus_target_id != newest_tab.target_id:
+                                            await browser_session.event_bus.dispatch(
+                                                SwitchTabEvent(target_id=newest_tab.target_id)
+                                            )
+                                            logger.info(
+                                                f"🔀 Auto-switched to newly opened tab {newest_tab.target_id[-4:]} after link click"
+                                            )
+                                            if callback:
+                                                auto_switch_log = (
+                                                    f"\n[System]\n检测到新标签页，已自动切换到 {newest_tab.target_id[-4:]}\n"
+                                                )
+                                                if asyncio.iscoroutinefunction(callback):
+                                                    await callback({'type': 'log', 'content': auto_switch_log})
+                                                else:
+                                                    callback({'type': 'log', 'content': auto_switch_log})
+                                    known_tab_ids = current_tab_ids
+                            except Exception as tab_error:
+                                logger.warning(f"⚠️ Failed to inspect/switch tabs after step {i + 1}: {tab_error}")
 
                         # 记录未标记任务的步骤（不自动修复，仅警告）
                         if has_real_action and not step_has_task_complete and planned_tasks:
@@ -1256,9 +1883,17 @@ class BaseBrowserAgent:
 
                                 if not task_already_marked:
                                     # 记录警告，提示 AI 标记当前任务
+                                    agent_instance._pending_status_task_id = next_expected_task_id
+                                    pending_task_description = None
+                                    if planned_tasks:
+                                        for task in planned_tasks:
+                                            if task.get('id') == next_expected_task_id:
+                                                pending_task_description = task.get('description')
+                                                break
+                                    agent_instance._pending_status_task_description = pending_task_description
                                     logger.warning(
-                                        f"⚠️ Step {i + 1} had actions but no mark_task_complete. "
-                                        f"Please mark task {next_expected_task_id} as completed after finishing it.")
+                                        f"⚠️ Step {i + 1} had actions but no task status update. "
+                                        f"Please mark task {next_expected_task_id} as completed, failed, or skipped.")
 
                     except Exception as e:
                         logger.warning(f"⚠️ Error in on_step_end processing: {e}")
@@ -1284,7 +1919,11 @@ class BaseBrowserAgent:
             logger.info("🔍 Performing final task status consistency check")
             # 检查是否有任务执行了但未标记完成
             executed_tasks_info = self._find_executed_tasks(history)
-            if executed_tasks_info and executed_tasks_info.get('unmarked_actions'):
+            if (
+                executed_tasks_info
+                and executed_tasks_info.get('executed_actions', 0) > len(executed_tasks_info.get('marked_tasks', []))
+                and executed_tasks_info.get('unmarked_actions')
+            ):
                 logger.warning(
                     f"⚠️ Found {executed_tasks_info['executed_actions']} executed actions, but only {len(executed_tasks_info['marked_tasks'])} tasks were explicitly marked complete")
                 logger.warning(f"⚠️ Unmarked actions: {executed_tasks_info['unmarked_actions']}")

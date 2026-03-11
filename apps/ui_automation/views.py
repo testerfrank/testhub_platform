@@ -2960,14 +2960,26 @@ class AICaseViewSet(viewsets.ModelViewSet):
                         task_id = step_info.get('task_id')
                         status = step_info.get('status')
                         if task_id and status:
-                            updated = False
-                            for task in execution_record.planned_tasks:
-                                if task['id'] == task_id:
-                                    task['status'] = status
-                                    updated = True
-                                    break
+                            if str(status).strip().lower() == 'completed':
+                                backfilled_ids = backfill_prior_pending_tasks(
+                                    execution_record.planned_tasks,
+                                    task_id
+                                )
+                                if backfilled_ids:
+                                    execution_record.logs += (
+                                        f"\n[System] 已补齐遗漏标记的前序子任务: "
+                                        f"{', '.join(map(str, backfilled_ids))}"
+                                    )
+                            updated = update_planned_task_status(
+                                execution_record.planned_tasks,
+                                task_id,
+                                status
+                            )
                             if updated:
-                                await sync_to_async(safe_save)(execution_record, update_fields=['planned_tasks'])
+                                update_fields = ['planned_tasks']
+                                if str(status).strip().lower() == 'completed' and 'backfilled_ids' in locals() and backfilled_ids:
+                                    update_fields.append('logs')
+                                await sync_to_async(safe_save)(execution_record, update_fields=update_fields)
                     except Exception as e:
                         logger.error(f"更新步骤状态失败: {e}")
 
@@ -2983,18 +2995,17 @@ class AICaseViewSet(viewsets.ModelViewSet):
                     execution_record.status = 'stopped'
                     execution_record.logs += "\n[System] 任务已由用户停止。"
                 else:
-                    # 更新成功状态
-                    execution_record.status = 'passed'
-                    execution_record.logs += "\n执行完成。"
-
-                    # 记录任务完成统计信息
-                    if execution_record.planned_tasks:
-                        total_tasks = len(execution_record.planned_tasks)
-                        completed_tasks = len(
-                            [t for t in execution_record.planned_tasks if t.get('status') == 'completed'])
-                        pending_tasks = len([t for t in execution_record.planned_tasks if t.get('status') == 'pending'])
-                        logger.info(
-                            f"🏁 Task completion summary: {completed_tasks}/{total_tasks} tasks completed, {pending_tasks} pending")
+                    execution_record.status, task_summary = resolve_execution_status(execution_record.planned_tasks)
+                    if execution_record.status == 'passed':
+                        execution_record.logs += "\n执行完成。"
+                    else:
+                        execution_record.logs += "\n执行结束，但存在未完成或失败的子任务。"
+                    logger.info(
+                        "🏁 Task completion summary: "
+                        f"{task_summary['completed']}/{task_summary['total']} completed, "
+                        f"{task_summary['failed']} failed, "
+                        f"{task_summary['pending'] + task_summary['in_progress']} pending"
+                    )
 
                 execution_record.end_time = timezone.now()
                 execution_record.duration = (execution_record.end_time - execution_record.start_time).total_seconds()
@@ -3010,6 +3021,10 @@ class AICaseViewSet(viewsets.ModelViewSet):
                 # 自动标记已完成的任务
                 if execution_record.planned_tasks:
                     self._auto_mark_completed_tasks(execution_record)
+                    execution_record.logs = append_execution_summary(
+                        execution_record.logs,
+                        summarize_planned_tasks(execution_record.planned_tasks)
+                    )
 
                 # 处理GIF录制文件
                 self._process_gif_recording(execution_record, history)
@@ -3017,10 +3032,21 @@ class AICaseViewSet(viewsets.ModelViewSet):
                 safe_save(execution_record)
 
             except Exception as e:
+                error_message = str(e)
+                failed_task_id = None if is_infrastructure_failure(error_message) else mark_first_active_task(execution_record.planned_tasks, 'failed')
                 execution_record.status = 'failed'
                 execution_record.end_time = timezone.now()
                 execution_record.duration = (execution_record.end_time - execution_record.start_time).total_seconds()
-                execution_record.logs += f"\n执行出错: {str(e)}"
+                if 'Execution LLM unavailable' in error_message:
+                    execution_record.logs += f"\n执行出错: AI 执行模型连接失败。{error_message}"
+                else:
+                    execution_record.logs += f"\n执行出错: {error_message}"
+                if failed_task_id is not None:
+                    execution_record.logs += f"\n[System] 子任务 {failed_task_id} 已自动标记为失败。"
+                execution_record.logs = append_execution_summary(
+                    execution_record.logs,
+                    summarize_planned_tasks(execution_record.planned_tasks)
+                )
                 try:
                     safe_save(execution_record)
                 except:
@@ -3119,6 +3145,155 @@ class AICaseViewSet(viewsets.ModelViewSet):
 
 # 全局停止信号字典 {execution_id: bool}
 STOP_SIGNALS = {}
+
+TERMINAL_TASK_STATUSES = {'completed', 'failed', 'skipped'}
+ACTIVE_TASK_STATUSES = {'pending', 'in_progress'}
+
+
+def update_planned_task_status(planned_tasks, task_id, task_status):
+    """更新子任务状态，返回是否命中任务。"""
+    if not planned_tasks or task_id is None or not task_status:
+        return False
+
+    normalized_status = str(task_status).strip().lower()
+    for task in planned_tasks:
+        if str(task.get('id')) == str(task_id):
+            task['status'] = normalized_status
+            return True
+    return False
+
+
+def backfill_prior_pending_tasks(planned_tasks, current_task_id):
+    """受限补齐：仅在强依赖场景下补齐紧邻前一步遗漏标记。"""
+    if not planned_tasks or current_task_id is None:
+        return []
+
+    try:
+        current_task_id_int = int(current_task_id)
+    except (TypeError, ValueError):
+        return []
+
+    task_by_id = {}
+    for task in planned_tasks:
+        try:
+            task_by_id[int(task.get('id'))] = task
+        except (TypeError, ValueError):
+            continue
+
+    current_task = task_by_id.get(current_task_id_int)
+    previous_task = task_by_id.get(current_task_id_int - 1)
+    if not current_task or not previous_task:
+        return []
+
+    if previous_task.get('status', 'pending') not in ACTIVE_TASK_STATUSES:
+        return []
+
+    previous_desc = str(previous_task.get('description', '')).strip()
+    current_desc = str(current_task.get('description', '')).strip()
+
+    # 验证/检查类任务必须显式标记，禁止自动补齐
+    verification_keywords = ['校验', '确认', '检查', '验证', '断言']
+    if any(keyword in previous_desc for keyword in verification_keywords):
+        return []
+
+    dependency_pairs = [
+        (['访问', '打开', '进入'], ['搜索', '输入', '点击', '查看']),
+        (['搜索'], ['点击第', '点击第2条', '点击第二条', '查看详情']),
+        (['点击第', '点击第2条', '点击第二条', '查看详情'], ['关闭', '关闭该标签页', '关闭标签页']),
+        (['打开详情', '查看详情'], ['关闭', '返回']),
+    ]
+
+    def matches_any(text, keywords):
+        return any(keyword in text for keyword in keywords)
+
+    allowed = any(
+        matches_any(previous_desc, prev_keywords) and matches_any(current_desc, curr_keywords)
+        for prev_keywords, curr_keywords in dependency_pairs
+    )
+
+    if not allowed:
+        return []
+
+    previous_task['status'] = 'completed'
+    return [current_task_id_int - 1]
+
+
+def mark_first_active_task(planned_tasks, task_status):
+    """在执行异常时为第一个未终态任务补一个状态。"""
+    if not planned_tasks:
+        return None
+
+    normalized_status = str(task_status).strip().lower()
+    for task in planned_tasks:
+        if task.get('status', 'pending') in ACTIVE_TASK_STATUSES:
+            task['status'] = normalized_status
+            return task.get('id')
+    return None
+
+
+def summarize_planned_tasks(planned_tasks):
+    """汇总子任务状态。"""
+    summary = {
+        'total': 0,
+        'completed': 0,
+        'failed': 0,
+        'skipped': 0,
+        'pending': 0,
+        'in_progress': 0,
+    }
+    if not planned_tasks:
+        return summary
+
+    summary['total'] = len(planned_tasks)
+    for task in planned_tasks:
+        task_status = task.get('status', 'pending')
+        if task_status in summary:
+            summary[task_status] += 1
+        else:
+            summary['pending'] += 1
+    return summary
+
+
+def resolve_execution_status(planned_tasks):
+    """根据子任务实际状态推导整单状态。"""
+    summary = summarize_planned_tasks(planned_tasks)
+
+    if summary['total'] == 0:
+        return 'passed', summary
+    if summary['failed'] > 0:
+        return 'failed', summary
+    if summary['pending'] > 0 or summary['in_progress'] > 0:
+        return 'failed', summary
+    return 'passed', summary
+
+
+def append_execution_summary(logs, summary):
+    """把任务统计附加到日志中。"""
+    if summary['total'] == 0:
+        return logs
+    return (
+        f"{logs}\n[System] 子任务统计: 总数 {summary['total']}，"
+        f"已完成 {summary['completed']}，失败 {summary['failed']}，"
+        f"跳过 {summary['skipped']}，待处理 {summary['pending'] + summary['in_progress']}。"
+    )
+
+
+def is_infrastructure_failure(error_message: str) -> bool:
+    """判断是否为模型/网络/初始化类故障，这类问题不应直接把首个子任务标失败。"""
+    message = (error_message or '').lower()
+    infra_markers = [
+        'execution llm unavailable',
+        'connection error',
+        'timed out',
+        'timeout',
+        'api key',
+        'authentication',
+        'unauthorized',
+        'forbidden',
+        'rate limit',
+        'service unavailable',
+    ]
+    return any(marker in message for marker in infra_markers)
 
 
 class AIExecutionRecordViewSet(viewsets.ModelViewSet):
@@ -3296,17 +3471,35 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                         if task_id and status:
                             updated = False
                             if execution_record.planned_tasks:
+                                old_status = None
                                 for task in execution_record.planned_tasks:
-                                    # 确保类型一致进行比较
-                                    if str(task['id']) == str(task_id):
+                                    if str(task.get('id')) == str(task_id):
                                         old_status = task.get('status', 'pending')
-                                        task['status'] = status
-                                        updated = True
-                                        logger.info(f"DEBUG: Updated task {task_id} from {old_status} to {status}")
                                         break
+                                backfilled_ids = []
+                                if str(status).strip().lower() == 'completed':
+                                    backfilled_ids = backfill_prior_pending_tasks(
+                                        execution_record.planned_tasks,
+                                        task_id
+                                    )
+                                    if backfilled_ids:
+                                        execution_record.logs += (
+                                            f"\n[System] 已补齐遗漏标记的前序子任务: "
+                                            f"{', '.join(map(str, backfilled_ids))}"
+                                        )
+                                updated = update_planned_task_status(
+                                    execution_record.planned_tasks,
+                                    task_id,
+                                    status
+                                )
+                                if updated:
+                                    logger.info(f"DEBUG: Updated task {task_id} from {old_status} to {status}")
                             if updated:
                                 # 立即保存到数据库，确保前端轮询能看到最新状态
-                                await sync_to_async(safe_save)(execution_record, update_fields=['planned_tasks'])
+                                update_fields = ['planned_tasks']
+                                if 'backfilled_ids' in locals() and backfilled_ids:
+                                    update_fields.append('logs')
+                                await sync_to_async(safe_save)(execution_record, update_fields=update_fields)
                             else:
                                 logger.warning(
                                     f"DEBUG: Task ID {task_id} not found in planned_tasks: {execution_record.planned_tasks}")
@@ -3328,18 +3521,17 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                     execution_record.status = 'stopped'
                     execution_record.logs += "\n[System] 任务已由用户停止。"
                 else:
-                    # 更新成功状态
-                    execution_record.status = 'passed'
-                    execution_record.logs += "\n执行完成。"
-
-                    # 记录任务完成统计信息
-                    if execution_record.planned_tasks:
-                        total_tasks = len(execution_record.planned_tasks)
-                        completed_tasks = len(
-                            [t for t in execution_record.planned_tasks if t.get('status') == 'completed'])
-                        pending_tasks = len([t for t in execution_record.planned_tasks if t.get('status') == 'pending'])
-                        logger.info(
-                            f"🏁 Task completion summary: {completed_tasks}/{total_tasks} tasks completed, {pending_tasks} pending")
+                    execution_record.status, task_summary = resolve_execution_status(execution_record.planned_tasks)
+                    if execution_record.status == 'passed':
+                        execution_record.logs += "\n执行完成。"
+                    else:
+                        execution_record.logs += "\n执行结束，但存在未完成或失败的子任务。"
+                    logger.info(
+                        "🏁 Task completion summary: "
+                        f"{task_summary['completed']}/{task_summary['total']} completed, "
+                        f"{task_summary['failed']} failed, "
+                        f"{task_summary['pending'] + task_summary['in_progress']} pending"
+                    )
 
                 execution_record.end_time = timezone.now()
                 execution_record.duration = (execution_record.end_time - execution_record.start_time).total_seconds()
@@ -3355,6 +3547,10 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                 # 自动标记已完成的任务
                 if execution_record.planned_tasks:
                     self._auto_mark_completed_tasks(execution_record)
+                    execution_record.logs = append_execution_summary(
+                        execution_record.logs,
+                        summarize_planned_tasks(execution_record.planned_tasks)
+                    )
 
                 # 处理GIF录制文件
                 self._process_gif_recording(execution_record, history)
@@ -3362,10 +3558,21 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                 safe_save(execution_record)
 
             except Exception as e:
+                error_message = str(e)
+                failed_task_id = None if is_infrastructure_failure(error_message) else mark_first_active_task(execution_record.planned_tasks, 'failed')
                 execution_record.status = 'failed'
                 execution_record.end_time = timezone.now()
                 execution_record.duration = (execution_record.end_time - execution_record.start_time).total_seconds()
-                execution_record.logs += f"\n执行出错: {str(e)}"
+                if 'Execution LLM unavailable' in error_message:
+                    execution_record.logs += f"\n执行出错: AI 执行模型连接失败。{error_message}"
+                else:
+                    execution_record.logs += f"\n执行出错: {error_message}"
+                if failed_task_id is not None:
+                    execution_record.logs += f"\n[System] 子任务 {failed_task_id} 已自动标记为失败。"
+                execution_record.logs = append_execution_summary(
+                    execution_record.logs,
+                    summarize_planned_tasks(execution_record.planned_tasks)
+                )
                 try:
                     safe_save(execution_record)
                 except:
@@ -3627,5 +3834,3 @@ class UiDashboardViewSet(viewsets.ViewSet):
             'suite_count': suite_test_case_count,
             'execution_count': total_execution_count
         })
-
-

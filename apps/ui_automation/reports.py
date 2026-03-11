@@ -99,16 +99,20 @@ class AIExecutionReportGenerator:
         completed = sum(1 for task in planned_tasks if task.get('status') == 'completed')
         pending = sum(1 for task in planned_tasks if task.get('status') == 'pending')
         failed = sum(1 for task in planned_tasks if task.get('status') == 'failed')
+        skipped = sum(1 for task in planned_tasks if task.get('status') == 'skipped')
+        in_progress = sum(1 for task in planned_tasks if task.get('status') == 'in_progress')
 
         completion_rate = round((completed / total) * 100, 2) if total > 0 else 0
-        success_rate = round((completed / total) * 100, 2) if total > 0 else 0
+        attempted = completed + failed
+        success_rate = round((completed / attempted) * 100, 2) if attempted > 0 else 0
 
         return {
             'total': total,
             'completed': completed,
             'pending': pending,
             'failed': failed,
-            'skipped': total - completed - pending - failed,
+            'skipped': skipped,
+            'in_progress': in_progress,
             'completion_rate': completion_rate,
             'success_rate': success_rate
         }
@@ -201,7 +205,8 @@ class AIExecutionReportGenerator:
             'passed': 'success',
             'failed': 'danger',
             'running': 'warning',
-            'pending': 'info'
+            'pending': 'info',
+            'stopped': 'warning'
         }
         return color_map.get(status, 'info')
 

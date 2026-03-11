@@ -211,7 +211,8 @@ const getStatusTag = (status) => {
     'pending': 'info',
     'running': 'warning',
     'passed': 'success',
-    'failed': 'danger'
+    'failed': 'danger',
+    'stopped': 'warning'
   }
   return map[status] || 'info'
 }
@@ -221,7 +222,8 @@ const getStatusText = (status) => {
     'pending': t('uiAutomation.status.pending'),
     'running': t('uiAutomation.status.running'),
     'passed': t('uiAutomation.status.success'),
-    'failed': t('uiAutomation.status.failed')
+    'failed': t('uiAutomation.status.failed'),
+    'stopped': t('uiAutomation.status.stopped')
   }
   return map[status] || status
 }
