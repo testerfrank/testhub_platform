@@ -4,6 +4,9 @@ import time
 import logging
 import sys
 
+# 避免长循环中的数据库连接超时
+from django.db import close_old_connections
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +37,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"{'='*60}"))
 
         while True:
+            # 每次循环前关闭旧连接，防止 MySQL 超时断开
+            close_old_connections()
             try:
                 now = timezone.now()
                 self.stdout.write(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开始检查任务...")
@@ -74,6 +79,8 @@ class Command(BaseCommand):
     def schedule_api_tasks(self):
         """调度 API 测试模块的定时任务"""
         try:
+            # 确保连接有效，简单地关闭旧连接让 Django 重连
+            close_old_connections()
             from apps.api_testing.models import ScheduledTask
             from apps.api_testing.views import ScheduledTaskViewSet
 
