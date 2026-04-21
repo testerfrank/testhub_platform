@@ -2,6 +2,7 @@
   "name": "testhub-frontend",
   "version": "1.0.1",
   "description": "TestHub前端应用",
+  "license": "GPL-3.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
