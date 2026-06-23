@@ -1,4 +1,12 @@
 import logging
+import sys
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, 'reconfigure'):
+        try:
+            stream.reconfigure(errors='replace')
+        except Exception:
+            pass
 
 logger = logging.getLogger('django')
 
@@ -13,6 +21,7 @@ import json
 import re
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
 
 # 加载环境变量
 load_dotenv()
@@ -935,6 +944,27 @@ from browser_use.browser.profile import BrowserProfile
 
 
 class BaseBrowserAgent:
+    @staticmethod
+    def _normalize_openai_base_url(base_url: str) -> str:
+        """Normalize OpenAI-compatible base URL for ChatOpenAI.
+
+        ChatOpenAI expects the base URL to include the API version prefix (usually /v1),
+        and appends /chat/completions internally. Users often configure the provider root
+        URL in the UI, so normalize it here to avoid requesting /chat/completions from a
+        web frontend route that returns HTML.
+        """
+        normalized_base_url = str(base_url).rstrip('/')
+
+        for known_endpoint in ('/chat/completions', '/models'):
+            if normalized_base_url.endswith(known_endpoint):
+                normalized_base_url = normalized_base_url[:-len(known_endpoint)]
+                break
+
+        if re.search(r'/v\d+/?$', normalized_base_url):
+            return normalized_base_url
+
+        return f"{normalized_base_url}/v1"
+
     def __init__(self, execution_mode='text', enable_gif=True, case_name=None):
         self.execution_mode = 'text'
         self.enable_gif = enable_gif  # GIF录制开关
@@ -961,6 +991,9 @@ class BaseBrowserAgent:
         self.base_url = model_config.get('base_url') or os.getenv('BASE_URL')
         self.model_name = model_config.get('model_name') or os.getenv('MODEL_NAME')
         self.provider = model_config.get('provider', 'openai')
+
+        if self.base_url:
+            self.base_url = self._normalize_openai_base_url(self.base_url)
 
         if not self.api_key:
             raise ValueError(f"No API Key found for mode: {execution_mode}")
@@ -1063,7 +1096,7 @@ class BaseBrowserAgent:
         """在真正启动执行前做一次轻量连通性检查，避免浏览器启动后反复空转失败。"""
         try:
             await asyncio.wait_for(
-                self.llm.ainvoke("Reply with OK."),
+                self.llm.ainvoke([HumanMessage(content="Reply with OK.")]),
                 timeout=20.0
             )
         except Exception as e:
@@ -1302,7 +1335,7 @@ class BaseBrowserAgent:
                 f"Task:\n{task_description}"
             )
 
-        response = await self.llm.ainvoke(prompt)
+        response = await self.llm.ainvoke([HumanMessage(content=prompt)])
         content = response.content.strip() if hasattr(response, 'content') else str(response)
 
         steps = []
