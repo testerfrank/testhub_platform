@@ -486,6 +486,22 @@ class TestCaseGenerationTask(models.Model):
         AIModelConfig, on_delete=models.SET_NULL, null=True,
         related_name='reviewer_tasks', verbose_name='评审模型配置'
     )
+    requirement_reviewer_model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='requirement_reviewer_tasks', verbose_name='需求评审模型配置'
+    )
+    requirement_analyzer_model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='requirement_analyzer_tasks', verbose_name='需求分析模型配置'
+    )
+    writer_model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='writer_generation_tasks', verbose_name='用例编写模型配置'
+    )
+    reviewer_model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='reviewer_generation_tasks', verbose_name='用例评审模型配置'
+    )
     writer_prompt_config = models.ForeignKey(
         PromptConfig, on_delete=models.SET_NULL, null=True,
         related_name='writer_tasks', verbose_name='编写提示词配置'
@@ -844,7 +860,7 @@ class AIModelService:
             {"role": "user", "content": user_message},
         ]
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.requirement_reviewer_model_config,
+            task.requirement_reviewer_model_provider,
             messages,
             callback=callback,
         )
@@ -874,7 +890,7 @@ class AIModelService:
             {"role": "user", "content": user_message},
         ]
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.requirement_analyzer_model_config,
+            task.requirement_analyzer_model_provider,
             messages,
             callback=callback,
         )
@@ -935,7 +951,7 @@ class AIModelService:
         # 所有支持的模型都使用兼容OpenAI的接口
         # 使用配置的max_tokens，不硬编码限制
         response = await AIModelService.call_openai_compatible_api(
-            task.writer_model_config,
+            task.writer_model_provider,
             messages
             # 不再硬编码max_tokens，使用配置文件中的值（如32000）
         )
@@ -970,7 +986,7 @@ class AIModelService:
             ]
 
             # 所有支持的模型都使用兼容OpenAI的接口
-            response = await AIModelService.call_openai_compatible_api(task.reviewer_model_config, messages)
+            response = await AIModelService.call_openai_compatible_api(task.reviewer_model_provider, messages)
 
             return response['choices'][0]['message']['content']
         except Exception as e:
@@ -1036,7 +1052,7 @@ class AIModelService:
         # 流式调用API，确保正确关闭生成器
         # 使用配置的max_tokens，不硬编码限制
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.writer_model_config,
+            task.writer_model_provider,
             messages,
             callback=callback
             # 不再硬编码max_tokens，使用配置文件中的值（如32000）
@@ -1108,7 +1124,7 @@ class AIModelService:
 
         # 流式调用API，确保正确关闭生成器
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.reviewer_model_config,
+            task.reviewer_model_provider,
             messages,
             callback=callback
         )
@@ -1203,7 +1219,7 @@ class AIModelService:
         # 流式调用API，确保正确关闭生成器
         # 使用配置的max_tokens，不硬编码限制
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.writer_model_config,
+            task.writer_model_provider,
             messages,
             callback=callback
             # 不再硬编码max_tokens，使用配置文件中的值（如32000）

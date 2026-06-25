@@ -744,7 +744,7 @@ export default {
       const modelKeys = ['requirement_reviewer_model', 'requirement_analyzer_model', 'writer_model', 'reviewer_model']
       for (const key of modelKeys) {
         if (!this.configStatus[key] || !this.configStatus[key].configured || !this.configStatus[key].enabled) {
-          this.$router.push('/configuration/ai-model')
+          this.$router.push('/configuration/models')
           return
         }
       }

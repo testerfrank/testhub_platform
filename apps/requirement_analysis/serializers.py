@@ -1,8 +1,8 @@
 from rest_framework import serializers
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
-    GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig
+    GeneratedTestCase, AnalysisTask, AIModelConfig, AIModelProvider, AIModelUsageConfig,
+    PromptConfig, TestCaseGenerationTask, GenerationConfig
 )
 
 
@@ -199,6 +199,84 @@ class AIModelConfigSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class AIModelProviderSerializer(serializers.ModelSerializer):
+    provider_type_display = serializers.CharField(source='get_provider_type_display', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    api_key_masked = serializers.SerializerMethodField(read_only=True)
+    is_used = serializers.SerializerMethodField(read_only=True)
+    usage_names = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = AIModelProvider
+        fields = [
+            'id', 'name', 'provider_type', 'provider_type_display', 'api_key', 'api_key_masked',
+            'base_url', 'model_name', 'max_tokens', 'temperature', 'top_p', 'is_active',
+            'is_used', 'usage_names', 'created_by', 'created_by_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_by_name']
+        extra_kwargs = {'api_key': {'write_only': True, 'required': False, 'allow_blank': True}}
+
+    def get_api_key_masked(self, obj):
+        if obj.api_key:
+            return f"{obj.api_key[:3]}{'*' * max(len(obj.api_key) - 7, 0)}{obj.api_key[-4:]}" if len(obj.api_key) > 7 else '*' * len(obj.api_key)
+        return ''
+
+    def get_is_used(self, obj):
+        return obj.usage_configs.exists()
+
+    def get_usage_names(self, obj):
+        return [usage.get_usage_type_display() for usage in obj.usage_configs.all()]
+
+    def update(self, instance, validated_data):
+        api_key = validated_data.get('api_key')
+        if api_key in (None, ''):
+            validated_data.pop('api_key', None)
+        return super().update(instance, validated_data)
+
+    def create(self, validated_data):
+        user = self.context['request'].user
+        if user.is_authenticated:
+            validated_data['created_by'] = user
+        else:
+            from apps.users.models import User
+            validated_data['created_by'] = User.objects.filter(is_superuser=True).first() or User.objects.first()
+        return super().create(validated_data)
+
+
+class AIModelUsageConfigSerializer(serializers.ModelSerializer):
+    usage_type_display = serializers.CharField(source='get_usage_type_display', read_only=True)
+    model_provider_name = serializers.CharField(source='model_provider.name', read_only=True)
+    model_provider_status = serializers.BooleanField(source='model_provider.is_active', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = AIModelUsageConfig
+        fields = [
+            'id', 'usage_type', 'usage_type_display', 'model_provider', 'model_provider_name',
+            'model_provider_status', 'is_active', 'created_by', 'created_by_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_by_name']
+        extra_kwargs = {'usage_type': {'validators': []}}
+
+    def validate_model_provider(self, value):
+        if not value.is_active:
+            raise serializers.ValidationError('只能选择启用状态的模型')
+        return value
+
+    def create(self, validated_data):
+        user = self.context['request'].user
+        if user.is_authenticated:
+            validated_data['created_by'] = user
+        else:
+            from apps.users.models import User
+            validated_data['created_by'] = User.objects.filter(is_superuser=True).first() or User.objects.first()
+        instance, _ = AIModelUsageConfig.objects.update_or_create(
+            usage_type=validated_data['usage_type'],
+            defaults=validated_data,
+        )
+        return instance
+
+
 class PromptConfigSerializer(serializers.ModelSerializer):
     """提示词配置序列化器"""
     prompt_type_display = serializers.CharField(source='get_prompt_type_display', read_only=True)
@@ -249,12 +327,12 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     project_name = serializers.CharField(source='project.name', read_only=True)
-    requirement_reviewer_model_name = serializers.CharField(source='requirement_reviewer_model_config.name', read_only=True)
-    requirement_analyzer_model_name = serializers.CharField(source='requirement_analyzer_model_config.name', read_only=True)
+    requirement_reviewer_model_name = serializers.CharField(source='requirement_reviewer_model_provider.name', read_only=True)
+    requirement_analyzer_model_name = serializers.CharField(source='requirement_analyzer_model_provider.name', read_only=True)
     requirement_reviewer_prompt_name = serializers.CharField(source='requirement_reviewer_prompt_config.name', read_only=True)
     requirement_analyzer_prompt_name = serializers.CharField(source='requirement_analyzer_prompt_config.name', read_only=True)
-    writer_model_name = serializers.CharField(source='writer_model_config.name', read_only=True)
-    reviewer_model_name = serializers.CharField(source='reviewer_model_config.name', read_only=True)
+    writer_model_name = serializers.CharField(source='writer_model_provider.name', read_only=True)
+    reviewer_model_name = serializers.CharField(source='reviewer_model_provider.name', read_only=True)
     writer_prompt_name = serializers.CharField(source='writer_prompt_config.name', read_only=True)
     reviewer_prompt_name = serializers.CharField(source='reviewer_prompt_config.name', read_only=True)
     
@@ -262,13 +340,13 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
         model = TestCaseGenerationTask
         fields = ['id', 'task_id', 'title', 'requirement_text', 'status', 'status_display',
                  'progress', 'project', 'project_name',
-                 'requirement_reviewer_model_config', 'requirement_reviewer_model_name',
-                 'requirement_analyzer_model_config', 'requirement_analyzer_model_name',
+                 'requirement_reviewer_model_provider', 'requirement_reviewer_model_name',
+                 'requirement_analyzer_model_provider', 'requirement_analyzer_model_name',
                  'requirement_reviewer_prompt_config', 'requirement_reviewer_prompt_name',
                  'requirement_analyzer_prompt_config', 'requirement_analyzer_prompt_name',
                  'requirement_review_result', 'requirement_analysis_result',
-                 'writer_model_config', 'writer_model_name',
-                 'reviewer_model_config', 'reviewer_model_name', 'writer_prompt_config', 'writer_prompt_name',
+                 'writer_model_provider', 'writer_model_name',
+                 'reviewer_model_provider', 'reviewer_model_name', 'writer_prompt_config', 'writer_prompt_name',
                  'reviewer_prompt_config', 'reviewer_prompt_name', 'generated_test_cases',
                  'review_feedback', 'final_test_cases', 'generation_log', 'error_message',
                  'created_by', 'created_by_name', 'created_at', 'updated_at', 'completed_at']
@@ -299,6 +377,8 @@ class TestCaseGenerationRequestSerializer(serializers.Serializer):
     """新的测试用例生成请求序列化器"""
     title = serializers.CharField(max_length=200, help_text="任务标题")
     requirement_text = serializers.CharField(help_text="需求描述")
+    use_writer_model = serializers.BooleanField(default=True, help_text="是否使用编写模型")
+    use_reviewer_model = serializers.BooleanField(default=True, help_text="是否使用评审模型")
 
 
 class GenerationConfigSerializer(serializers.ModelSerializer):

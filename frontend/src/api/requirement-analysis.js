@@ -102,6 +102,60 @@ export function deleteAIModelConfig(id) {
   })
 }
 
+// ==================== 模型池配置 ====================
+
+export function getModelProviders(params) {
+  return request({ url: '/requirement-analysis/model-providers/', method: 'get', params })
+}
+
+export function createModelProvider(data) {
+  return request({ url: '/requirement-analysis/model-providers/', method: 'post', data })
+}
+
+export function updateModelProvider(id, data) {
+  return request({ url: `/requirement-analysis/model-providers/${id}/`, method: 'patch', data })
+}
+
+export function revealModelProviderApiKey(id) {
+  return request({ url: `/requirement-analysis/model-providers/${id}/api_key/`, method: 'get' })
+}
+
+export function deleteModelProvider(id) {
+  return request({ url: `/requirement-analysis/model-providers/${id}/`, method: 'delete' })
+}
+
+export function testModelProviderConnection(id) {
+  return request({ url: `/requirement-analysis/model-providers/${id}/test_connection/`, method: 'post' })
+}
+
+export function getModelProviderAvailableModels(id) {
+  return request({ url: `/requirement-analysis/model-providers/${id}/available_models/`, method: 'get' })
+}
+
+export function previewModelProviderAvailableModels(data) {
+  return request({ url: '/requirement-analysis/model-providers/available_models/', method: 'post', data })
+}
+
+export function getModelUsages(params) {
+  return request({ url: '/requirement-analysis/model-usages/', method: 'get', params })
+}
+
+export function getModelUsageByType(usageType) {
+  return request({ url: '/requirement-analysis/model-usages/by_usage/', method: 'get', params: { usage_type: usageType } })
+}
+
+export function saveModelUsage(data) {
+  return request({ url: '/requirement-analysis/model-usages/', method: 'post', data })
+}
+
+export function updateModelUsage(id, data) {
+  return request({ url: `/requirement-analysis/model-usages/${id}/`, method: 'patch', data })
+}
+
+export function bulkUpsertModelUsages(usages) {
+  return request({ url: '/requirement-analysis/model-usages/bulk_upsert/', method: 'post', data: { usages } })
+}
+
 // ==================== 提示词配置 ====================
 
 // 获取所有提示词配置

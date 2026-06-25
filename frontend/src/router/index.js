@@ -355,12 +355,16 @@ const routes = [
                 children: [
                     {
                         path: '',
-                        redirect: 'ai-model'
+                        redirect: 'models'
+                    },
+                    {
+                        path: 'models',
+                        name: 'ConfigModelManagement',
+                        component: () => import('@/views/configuration/ModelManagement.vue')
                     },
                     {
                         path: 'ai-model',
-                        name: 'ConfigAIModel',
-                        component: () => import('@/views/requirement-analysis/AIModelConfig.vue')
+                        redirect: 'models'
                     },
                     {
                         path: 'prompt-config',
@@ -384,8 +388,7 @@ const routes = [
                     },
                     {
                         path: 'ai-mode',
-                        name: 'ConfigAIMode',
-                        component: () => import('@/views/configuration/AIIntelligentModeConfig.vue')
+                        redirect: 'models'
                     },
                     {
                         path: 'scheduled-task',
