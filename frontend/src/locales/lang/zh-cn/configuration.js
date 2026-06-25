@@ -194,8 +194,11 @@ export default {
       other: '其他'
     },
     roles: {
+      requirement_reviewer: '需求评审专家',
+      requirement_analyzer: '需求分析专家',
       writer: '测试用例编写专家',
-      reviewer: '测试评审专家'
+      reviewer: '测试评审专家',
+      browser_use_text: 'Browser Use - 文本模式'
     },
     messages: {
       loadFailed: '加载配置失败',

@@ -147,8 +147,11 @@
                 required
                 @change="console.log('Role changed to:', configForm.role)">
                 <option value="">{{ $t('configuration.aiModel.selectRole') }}</option>
+                <option value="requirement_reviewer">需求评审专家</option>
+                <option value="requirement_analyzer">需求分析专家</option>
                 <option value="writer">{{ $t('configuration.aiModel.roles.writer') }}</option>
                 <option value="reviewer">{{ $t('configuration.aiModel.roles.reviewer') }}</option>
+                <option value="browser_use_text">Browser Use - 文本模式</option>
               </select>
             </div>
 

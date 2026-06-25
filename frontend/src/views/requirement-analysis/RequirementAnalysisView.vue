@@ -252,13 +252,31 @@
             </div>
           </div>
 
+          <!-- 需求评审结果显示区域 -->
+          <div v-if="requirementReviewContent" class="stream-content-display">
+            <div class="stream-header">
+              <span class="stream-title">需求评审结果</span>
+              <span class="stream-status">{{ $t('requirementAnalysis.characters', { count: requirementReviewContent.length }) }}</span>
+            </div>
+            <div class="stream-content" v-html="requirementReviewContentHtml"></div>
+          </div>
+
+          <!-- 测试设计分析报告显示区域 -->
+          <div v-if="requirementAnalysisContent" class="stream-content-display" style="margin-top: 15px;">
+            <div class="stream-header">
+              <span class="stream-title">测试设计分析报告</span>
+              <span class="stream-status">{{ $t('requirementAnalysis.characters', { count: requirementAnalysisContent.length }) }}</span>
+            </div>
+            <div class="stream-content" v-html="requirementAnalysisContentHtml"></div>
+          </div>
+
           <!-- 流式内容实时显示区域 -->
-          <div v-if="streamedContent" class="stream-content-display">
+          <div v-if="streamedContent" class="stream-content-display" style="margin-top: 15px;">
             <div class="stream-header">
               <span class="stream-title">{{ $t('requirementAnalysis.realtimeGeneratedContent') }}</span>
               <span class="stream-status">{{ $t('requirementAnalysis.characters', { count: streamedContent.length }) }}</span>
             </div>
-            <div class="stream-content" v-html="formatMarkdown(streamedContent)"></div>
+            <div class="stream-content" v-html="streamedContentHtml"></div>
           </div>
 
           <!-- 评审内容显示区域 -->
@@ -267,7 +285,7 @@
               <span class="stream-title">{{ $t('requirementAnalysis.aiReviewComments') }}</span>
               <span class="stream-status">{{ $t('requirementAnalysis.characters', { count: streamedReviewContent.length }) }}</span>
             </div>
-            <div class="stream-content" v-html="formatMarkdown(streamedReviewContent)"></div>
+            <div class="stream-content" v-html="streamedReviewContentHtml"></div>
           </div>
 
           <!-- 最终版用例显示区域 -->
@@ -279,24 +297,28 @@
               </span>
               <span class="stream-status">{{ $t('requirementAnalysis.characters', { count: finalTestCases.length }) }}</span>
             </div>
-            <div class="stream-content final-testcases" v-html="formatMarkdown(finalTestCases)"></div>
+            <div class="stream-content final-testcases" v-html="finalTestCasesHtml"></div>
           </div>
 
           <div class="progress-steps">
             <div class="step" :class="{ active: currentStep >= 1 }">
               <span class="step-number">1</span>
-              <span class="step-text">{{ $t('requirementAnalysis.stepAnalysis') }}</span>
+              <span class="step-text">需求评审</span>
             </div>
             <div class="step" :class="{ active: currentStep >= 2 }">
               <span class="step-number">2</span>
+              <span class="step-text">需求分析</span>
+            </div>
+            <div class="step" :class="{ active: currentStep >= 3 }">
+              <span class="step-number">3</span>
               <span class="step-text">{{ $t('requirementAnalysis.stepWriting') }}</span>
             </div>
-            <div v-if="showReviewStep" class="step" :class="{ active: currentStep >= 3 }">
-              <span class="step-number">3</span>
+            <div v-if="showReviewStep" class="step" :class="{ active: currentStep >= 4 }">
+              <span class="step-number">4</span>
               <span class="step-text">{{ $t('requirementAnalysis.stepReview') }}</span>
             </div>
-            <div class="step" :class="{ active: currentStep >= (showReviewStep ? 4 : 3) }">
-              <span class="step-number">{{ showReviewStep ? 4 : 3 }}</span>
+            <div class="step" :class="{ active: currentStep >= 5 }">
+              <span class="step-number">5</span>
               <span class="step-text">{{ $t('requirementAnalysis.stepComplete') }}</span>
             </div>
           </div>
@@ -343,6 +365,7 @@ import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import * as XLSX from 'xlsx'
 import { useUserStore } from '@/stores/user'
+import { formatMarkdown } from '@/utils/markdownFormatter.mjs'
 
 export default {
   name: 'RequirementAnalysisView',
@@ -372,9 +395,23 @@ export default {
       currentStep: 0,
       pollInterval: null,
       eventSource: null,  // SSE连接
+      requirementReviewContent: '',
+      requirementReviewContentHtml: '',
+      requirementAnalysisContent: '',
+      requirementAnalysisContentHtml: '',
       streamedContent: '',  // 流式接收的内容
+      streamedContentHtml: '',  // 缓存后的流式内容HTML，避免模板频繁全量格式化
       streamedReviewContent: '',  // 流式接收的评审内容
+      streamedReviewContentHtml: '',  // 缓存后的评审内容HTML
       finalTestCases: '',  // 最终版用例
+      finalTestCasesHtml: '',  // 缓存后的最终版用例HTML
+      streamFlushTimer: null,  // 流式内容节流刷新定时器
+      pendingRequirementReviewContent: '',
+      pendingRequirementAnalysisContent: '',
+      pendingStreamContent: '',  // 等待合并刷新的生成内容
+      pendingReviewContent: '',  // 等待合并刷新的评审内容
+      pendingFinalContent: '',  // 等待合并刷新的最终用例内容
+      streamFlushInterval: 300,  // 流式内容刷新间隔，降低DOM更新频率
       hasShownCompletionMessage: false,  // 是否已经显示过完成消息
       showReviewStep: true,  // 是否显示评审步骤（根据生成配置决定）
 
@@ -386,6 +423,36 @@ export default {
       configStatus: {
         overall_status: 'unknown',
         message: '',
+        requirement_reviewer_model: {
+          configured: false,
+          enabled: false,
+          name: null,
+          provider: null,
+          id: null,
+          required: true
+        },
+        requirement_analyzer_model: {
+          configured: false,
+          enabled: false,
+          name: null,
+          provider: null,
+          id: null,
+          required: true
+        },
+        requirement_reviewer_prompt: {
+          configured: false,
+          enabled: false,
+          name: null,
+          id: null,
+          required: true
+        },
+        requirement_analyzer_prompt: {
+          configured: false,
+          enabled: false,
+          name: null,
+          id: null,
+          required: true
+        },
         writer_model: {
           configured: false,
           enabled: false,
@@ -461,12 +528,143 @@ export default {
     if (this.pollInterval) {
       clearInterval(this.pollInterval)
     }
+    if (this.streamFlushTimer) {
+      clearTimeout(this.streamFlushTimer)
+      this.flushStreamContent()
+    }
+    if (this.eventSource) {
+      this.eventSource.close()
+      this.eventSource = null
+    }
     // 停止token自动刷新定时器
     const userStore = useUserStore()
     userStore.stopAutoRefresh()
   },
 
   methods: {
+    debugLog(...args) {
+      if (import.meta.env.DEV) {
+        console.log(...args)
+      }
+    },
+
+    scheduleStreamFlush() {
+      if (this.streamFlushTimer) return
+
+      this.streamFlushTimer = setTimeout(() => {
+        this.flushStreamContent()
+      }, this.streamFlushInterval)
+    },
+
+    flushStreamContent() {
+      if (this.streamFlushTimer) {
+        clearTimeout(this.streamFlushTimer)
+        this.streamFlushTimer = null
+      }
+
+      if (this.pendingRequirementReviewContent) {
+        this.requirementReviewContent += this.pendingRequirementReviewContent
+        this.pendingRequirementReviewContent = ''
+        this.requirementReviewContentHtml = this.formatMarkdown(this.requirementReviewContent)
+      }
+
+      if (this.pendingRequirementAnalysisContent) {
+        this.requirementAnalysisContent += this.pendingRequirementAnalysisContent
+        this.pendingRequirementAnalysisContent = ''
+        this.requirementAnalysisContentHtml = this.formatMarkdown(this.requirementAnalysisContent)
+      }
+
+      if (this.pendingStreamContent) {
+        this.streamedContent += this.pendingStreamContent
+        this.pendingStreamContent = ''
+        this.streamedContentHtml = this.formatMarkdown(this.streamedContent)
+      }
+
+      if (this.pendingReviewContent) {
+        this.streamedReviewContent += this.pendingReviewContent
+        this.pendingReviewContent = ''
+        this.streamedReviewContentHtml = this.formatMarkdown(this.streamedReviewContent)
+      }
+
+      if (this.pendingFinalContent) {
+        this.finalTestCases += this.pendingFinalContent
+        this.pendingFinalContent = ''
+        this.finalTestCasesHtml = this.formatMarkdown(this.finalTestCases)
+      }
+    },
+
+    appendRequirementReviewContent(content) {
+      if (!content) return
+      this.pendingRequirementReviewContent += content
+      this.scheduleStreamFlush()
+    },
+
+    appendRequirementAnalysisContent(content) {
+      if (!content) return
+      this.pendingRequirementAnalysisContent += content
+      this.scheduleStreamFlush()
+    },
+
+    appendStreamContent(content) {
+      if (!content) return
+      this.pendingStreamContent += content
+      this.scheduleStreamFlush()
+    },
+
+    appendReviewContent(content) {
+      if (!content) return
+      this.pendingReviewContent += content
+      this.scheduleStreamFlush()
+    },
+
+    appendFinalContent(content) {
+      if (!content) return
+      this.pendingFinalContent += content
+      this.scheduleStreamFlush()
+    },
+
+    setRequirementReviewContent(content) {
+      this.requirementReviewContent = content || ''
+      this.requirementReviewContentHtml = this.formatMarkdown(this.requirementReviewContent)
+    },
+
+    setRequirementAnalysisContent(content) {
+      this.requirementAnalysisContent = content || ''
+      this.requirementAnalysisContentHtml = this.formatMarkdown(this.requirementAnalysisContent)
+    },
+
+    setStreamedContent(content) {
+      this.streamedContent = content || ''
+      this.streamedContentHtml = this.formatMarkdown(this.streamedContent)
+    },
+
+    setStreamedReviewContent(content) {
+      this.streamedReviewContent = content || ''
+      this.streamedReviewContentHtml = this.formatMarkdown(this.streamedReviewContent)
+    },
+
+    setFinalTestCases(content) {
+      this.finalTestCases = content || ''
+      this.finalTestCasesHtml = this.formatMarkdown(this.finalTestCases)
+    },
+
+    resetStreamBuffers() {
+      if (this.streamFlushTimer) {
+        clearTimeout(this.streamFlushTimer)
+        this.streamFlushTimer = null
+      }
+      this.pendingRequirementReviewContent = ''
+      this.pendingRequirementAnalysisContent = ''
+      this.pendingStreamContent = ''
+      this.pendingReviewContent = ''
+      this.pendingFinalContent = ''
+      this.setRequirementReviewContent('')
+      this.setRequirementAnalysisContent('')
+      this.setStreamedContent('')
+      this.setStreamedReviewContent('')
+      this.setFinalTestCases('')
+    },
+
     async loadProjects() {
       try {
         const response = await api.get('/projects/')
@@ -482,41 +680,35 @@ export default {
         const response = await api.get('/requirement-analysis/config/check/')
         this.configStatus = response.data
 
-        // 判断逻辑：只有当"用例编写模型"、"用例评审模型"、"用例编写提示词"和"用例评审提示词"都配置且启用时，才不显示弹框
-        const writerModelReady = response.data.writer_model &&
-                                response.data.writer_model.configured &&
-                                response.data.writer_model.enabled
+        const requiredConfigKeys = [
+          'requirement_reviewer_model',
+          'requirement_analyzer_model',
+          'writer_model',
+          'reviewer_model',
+          'requirement_reviewer_prompt',
+          'requirement_analyzer_prompt',
+          'writer_prompt',
+          'reviewer_prompt'
+        ]
+        const allRequiredReady = requiredConfigKeys.every(key => {
+          const item = response.data[key]
+          return item && item.configured && item.enabled
+        })
 
-        const reviewerModelReady = response.data.reviewer_model &&
-                                  response.data.reviewer_model.configured &&
-                                  response.data.reviewer_model.enabled
-
-        const writerPromptReady = response.data.writer_prompt &&
-                                 response.data.writer_prompt.configured &&
-                                 response.data.writer_prompt.enabled
-
-        const reviewerPromptReady = response.data.reviewer_prompt &&
-                                   response.data.reviewer_prompt.configured &&
-                                   response.data.reviewer_prompt.enabled
-
-        // 检查生成行为配置
         const generationConfigReady = response.data.generation_config &&
                                       response.data.generation_config.configured
 
-        // 只有五项都准备好时才不显示引导弹框
-        if (writerModelReady && reviewerModelReady && writerPromptReady && reviewerPromptReady && generationConfigReady) {
+        if (allRequiredReady && generationConfigReady) {
           this.showConfigGuide = false
 
-          // 如果生成配置允许用户修改，则使用配置的默认输出模式
           if (response.data.generation_config && response.data.generation_config.default_output_mode) {
             this.globalOutputMode = response.data.generation_config.default_output_mode
           }
 
-          // 根据生成配置的enable_auto_review决定是否显示评审步骤
           if (response.data.generation_config && response.data.generation_config.enable_auto_review !== null) {
             this.showReviewStep = response.data.generation_config.enable_auto_review
           } else {
-            this.showReviewStep = true  // 默认显示
+            this.showReviewStep = true
           }
         } else {
           this.showConfigGuide = true
@@ -541,28 +733,20 @@ export default {
         return
       }
 
-      // 1. 优先检查必需的提示词配置（writer_prompt）
-      if (!this.configStatus.writer_prompt.configured || !this.configStatus.writer_prompt.enabled) {
-        this.$router.push('/configuration/prompt-config')
-        return
+      const promptKeys = ['requirement_reviewer_prompt', 'requirement_analyzer_prompt', 'writer_prompt', 'reviewer_prompt']
+      for (const key of promptKeys) {
+        if (!this.configStatus[key] || !this.configStatus[key].configured || !this.configStatus[key].enabled) {
+          this.$router.push('/configuration/prompt-config')
+          return
+        }
       }
 
-      // 2. 检查必需的模型配置（writer_model）
-      if (!this.configStatus.writer_model.configured || !this.configStatus.writer_model.enabled) {
-        this.$router.push('/configuration/ai-model')
-        return
-      }
-
-      // 3. 检查可选的评审提示词（reviewer_prompt）
-      if (!this.configStatus.reviewer_prompt.configured || !this.configStatus.reviewer_prompt.enabled) {
-        this.$router.push('/configuration/prompt-config')
-        return
-      }
-
-      // 4. 检查可选的评审模型（reviewer_model）
-      if (!this.configStatus.reviewer_model.configured || !this.configStatus.reviewer_model.enabled) {
-        this.$router.push('/configuration/ai-model')
-        return
+      const modelKeys = ['requirement_reviewer_model', 'requirement_analyzer_model', 'writer_model', 'reviewer_model']
+      for (const key of modelKeys) {
+        if (!this.configStatus[key] || !this.configStatus[key].configured || !this.configStatus[key].enabled) {
+          this.$router.push('/configuration/ai-model')
+          return
+        }
       }
 
       // 默认跳转到生成行为配置
@@ -724,11 +908,11 @@ export default {
       try {
         const userStore = useUserStore()
         if (userStore.isTokenExpiringSoon && userStore.refreshToken) {
-          console.log('Refreshing token before generation...')
+          this.debugLog('Refreshing token before generation...')
           await userStore.refreshAccessToken()
-          console.log('Token refreshed successfully, safe to start generation')
+          this.debugLog('Token refreshed successfully, safe to start generation')
         } else if (userStore.accessToken) {
-          console.log('Token status is good, no refresh needed')
+          this.debugLog('Token status is good, no refresh needed')
         }
       } catch (error) {
         console.error('Token refresh failed:', error)
@@ -739,9 +923,7 @@ export default {
       this.isGenerating = true
       this.currentStep = 1
       this.progressText = this.$t('requirementAnalysis.creatingTask')
-      this.streamedContent = ''  // 清空流式内容
-      this.finalTestCases = ''  // 清空最终版用例
-      this.streamedReviewContent = ''  // 清空评审内容
+      this.resetStreamBuffers()  // 清空流式内容、HTML缓存和待刷新缓冲区
       this.hasShownCompletionMessage = false  // 重置完成消息标志位
       this.showResults = false  // 隐藏上一次的结果
 
@@ -750,8 +932,6 @@ export default {
         const requestData = {
           title: title,
           requirement_text: requirementText,
-          use_writer_model: true,
-          use_reviewer_model: true,
           output_mode: outputMode  // 添加输出模式参数
         }
 
@@ -792,58 +972,71 @@ export default {
       const currentOrigin = window.location.origin
       const apiUrl = `${currentOrigin}/api/requirement-analysis/testcase-generation/${this.currentTaskId}/stream_progress/`
 
-      console.log('SSE连接URL:', apiUrl)
+      this.debugLog('SSE连接URL:', apiUrl)
 
       // 创建EventSource（不支持自定义headers，使用withCredentials发送cookie）
       this.eventSource = new EventSource(apiUrl, { withCredentials: true })
 
       // 监听连接打开事件
       this.eventSource.onopen = (event) => {
-        console.log('✅ SSE连接已打开', event)
+        this.debugLog('✅ SSE连接已打开', event)
       }
 
       this.eventSource.onmessage = (event) => {
-        console.log('📨 收到SSE消息:', event.data)
-
         try {
           const data = JSON.parse(event.data)
-          console.log('📦 解析后的数据:', data)
+          this.debugLog('📨 收到SSE消息类型:', data.type)
 
           if (data.type === 'progress') {
             // Update progress status
-            if (data.status === 'generating') {
+            if (data.status === 'reviewing_requirement') {
+              this.currentStep = 1
+              this.progressText = `需求评审中 ${data.progress}%`
+            } else if (data.status === 'analyzing_requirement') {
               this.currentStep = 2
+              this.progressText = `需求分析中 ${data.progress}%`
+            } else if (data.status === 'generating') {
+              this.currentStep = 3
               this.progressText = `${this.$t('requirementAnalysis.statusGenerating')} ${data.progress}%`
             } else if (data.status === 'reviewing') {
-              this.currentStep = 3
+              this.currentStep = 4
               this.progressText = `${this.$t('requirementAnalysis.statusReviewing')} ${data.progress}%`
             } else if (data.status === 'revising') {
-              this.currentStep = 3
+              this.currentStep = 4
               this.progressText = `${this.$t('requirementAnalysis.statusRevising')} ${data.progress}%`
             }
+          } else if (data.type === 'requirement_review_content') {
+            this.appendRequirementReviewContent(data.content)
+            this.currentStep = 1
+            this.progressText = '需求评审中'
+          } else if (data.type === 'requirement_analysis_content') {
+            this.appendRequirementAnalysisContent(data.content)
+            this.currentStep = 2
+            this.progressText = '需求分析中'
           } else if (data.type === 'content') {
             // Real-time streaming content (case generation)
-            console.log('✍️ Received streaming content:', data.content.length, 'characters')
-            this.streamedContent += data.content
-            this.currentStep = 2
+            this.debugLog('✍️ Received streaming content:', data.content.length, 'characters')
+            this.appendStreamContent(data.content)
+            this.currentStep = 3
             this.progressText = this.$t('requirementAnalysis.statusGenerating')
           } else if (data.type === 'review_content') {
             // Real-time review content
-            console.log('📝 Received review content:', data.content.length, 'characters', 'Total length:', this.streamedReviewContent.length + data.content.length)
-            this.streamedReviewContent += data.content
-            this.currentStep = 3
+            this.debugLog('📝 Received review content:', data.content.length, 'characters')
+            this.appendReviewContent(data.content)
+            this.currentStep = 4
             this.progressText = this.$t('requirementAnalysis.statusReviewing')
           } else if (data.type === 'final_content') {
             // Real-time final test cases content
-            console.log('🎯 Received final cases content:', data.content.length, 'characters', 'Total length:', this.finalTestCases.length + data.content.length)
-            this.finalTestCases += data.content
-            this.currentStep = 3
+            this.debugLog('🎯 Received final cases content:', data.content.length, 'characters')
+            this.appendFinalContent(data.content)
+            this.currentStep = 4
             this.progressText = '🎯 ' + this.$t('requirementAnalysis.statusRevising')
           } else if (data.type === 'status') {
             // Final status
-            console.log('📊 Received status update:', data.status)
+            this.debugLog('📊 Received status update:', data.status)
             if (data.status === 'completed') {
               this.progressText = this.$t('requirementAnalysis.statusCompleted')
+              this.flushStreamContent()
               // Fetch final result
               this.fetchFinalResult()
             } else if (data.status === 'failed') {
@@ -852,9 +1045,9 @@ export default {
             }
           } else if (data.type === 'done') {
             // 流式结束，立即关闭EventSource，获取最终结果
-            console.log('✅ 流式传输完成')
+            this.debugLog('✅ 流式传输完成')
             if (this.eventSource) {
-              console.log('🔒 关闭SSE连接')
+              this.debugLog('🔒 关闭SSE连接')
               this.eventSource.close()
               this.eventSource = null
             }
@@ -866,22 +1059,22 @@ export default {
       }
 
       this.eventSource.onerror = (error) => {
-        console.log('⚠️ SSE连接事件:', error)
+        this.debugLog('⚠️ SSE连接事件:', error)
 
         // 如果EventSource已经被关闭（在onmessage中关闭的），不做任何处理
         if (!this.eventSource) {
-          console.log('ℹ️ EventSource已关闭，忽略错误事件')
+          this.debugLog('ℹ️ EventSource已关闭，忽略错误事件')
           return
         }
 
-        console.log('EventSource状态:', {
+        this.debugLog('EventSource状态:', {
           readyState: this.eventSource.readyState,
           url: this.eventSource.url
         })
 
         // 如果任务已经完成或不在生成中，不要降级
         if (this.showResults || !this.isGenerating) {
-          console.log('ℹ️ 任务已完成或不在生成中，不降级到轮询')
+          this.debugLog('ℹ️ 任务已完成或不在生成中，不降级到轮询')
           // 清理EventSource
           if (this.eventSource) {
             this.eventSource.close()
@@ -900,7 +1093,7 @@ export default {
           this.startPolling()
         } else if (this.eventSource.readyState === 0) {
           // EventSource正在重连，等待一段时间后检查
-          console.log('🔄 SSE正在重连...')
+          this.debugLog('🔄 SSE正在重连...')
           setTimeout(() => {
             // 如果5秒后还是断开状态，降级到轮询
             if (this.eventSource && this.eventSource.readyState === 0) {
@@ -917,6 +1110,7 @@ export default {
 
     async fetchFinalResult() {
       try {
+        this.flushStreamContent()
         // 修复URL：去掉多余的/api/前缀（axios baseURL已经包含/api）
         const response = await api.get(`/requirement-analysis/testcase-generation/${this.currentTaskId}/progress/`)
         const task = response.data
@@ -925,27 +1119,34 @@ export default {
         this.showResults = true
         this.isGenerating = false
 
-        // 设置第4步为完成状态
-        this.currentStep = 4
+        // 设置第5步为完成状态
+        this.currentStep = 5
+
+        if (task.requirement_review_result) {
+          this.setRequirementReviewContent(task.requirement_review_result)
+        }
+        if (task.requirement_analysis_result) {
+          this.setRequirementAnalysisContent(task.requirement_analysis_result)
+        }
 
         // 设置最终版用例（如果还没有通过流式接收完整）
         if (task.final_test_cases) {
-          console.log('📝 Getting final cases from task object')
+          this.debugLog('📝 Getting final cases from task object')
           // 无论this.finalTestCases是否已有值，都用最新的final_test_cases覆盖
           // 这样确保完整输出模式下也能正确显示最终版用例
-          this.finalTestCases = task.final_test_cases
+          this.setFinalTestCases(task.final_test_cases)
         }
 
         // 如果评审内容为空，从task对象中获取
         if (!this.streamedReviewContent && task.review_feedback) {
-          console.log('📝 Getting review content from task object')
-          this.streamedReviewContent = task.review_feedback
+          this.debugLog('📝 Getting review content from task object')
+          this.setStreamedReviewContent(task.review_feedback)
         }
 
         // 如果生成内容为空，从task对象中获取
         if (!this.streamedContent && task.generated_test_cases) {
-          console.log('✍️ Getting generated content from task object')
-          this.streamedContent = task.generated_test_cases
+          this.debugLog('✍️ Getting generated content from task object')
+          this.setStreamedContent(task.generated_test_cases)
         }
 
         if (this.eventSource) {
@@ -966,6 +1167,7 @@ export default {
     },
 
     handleGenerationError() {
+      this.flushStreamContent()
       this.isGenerating = false
       if (this.eventSource) {
         this.eventSource.close()
@@ -984,17 +1186,26 @@ export default {
           const response = await api.get(`/requirement-analysis/testcase-generation/${this.currentTaskId}/progress/`)
           const task = response.data
 
-          console.log(`${this.$t('requirementAnalysis.taskStatus')}: ${task.status}, ${this.$t('requirementAnalysis.progress')}: ${task.progress}%`)
+          this.debugLog(`${this.$t('requirementAnalysis.taskStatus')}: ${task.status}, ${this.$t('requirementAnalysis.progress')}: ${task.progress}%`)
 
           // 更新进度显示
-          if (task.status === 'generating') {
+          if (task.status === 'reviewing_requirement') {
+            this.currentStep = 1
+            this.progressText = '需求评审中'
+          } else if (task.status === 'analyzing_requirement') {
             this.currentStep = 2
+            this.progressText = '需求分析中'
+          } else if (task.status === 'generating') {
+            this.currentStep = 3
             this.progressText = this.$t('requirementAnalysis.statusGenerating')
           } else if (task.status === 'reviewing') {
-            this.currentStep = 3
-            this.progressText = this.$t('requirementAnalysis.statusReviewing')
-          } else if (task.status === 'completed') {
             this.currentStep = 4
+            this.progressText = this.$t('requirementAnalysis.statusReviewing')
+          } else if (task.status === 'revising') {
+            this.currentStep = 4
+            this.progressText = this.$t('requirementAnalysis.statusRevising')
+          } else if (task.status === 'completed') {
+            this.currentStep = 5
             this.progressText = this.$t('requirementAnalysis.statusCompleted')
 
             // 任务完成，显示结果
@@ -1003,17 +1214,23 @@ export default {
             this.isGenerating = false
 
             // 设置显示内容（完整输出模式下需要）
+            if (task.requirement_review_result) {
+              this.setRequirementReviewContent(task.requirement_review_result)
+            }
+            if (task.requirement_analysis_result) {
+              this.setRequirementAnalysisContent(task.requirement_analysis_result)
+            }
             if (task.generated_test_cases) {
-              console.log('✍️ Polling mode - Setting generated content')
-              this.streamedContent = task.generated_test_cases
+              this.debugLog('✍️ Polling mode - Setting generated content')
+              this.setStreamedContent(task.generated_test_cases)
             }
             if (task.review_feedback) {
-              console.log('📝 Polling mode - Setting review content')
-              this.streamedReviewContent = task.review_feedback
+              this.debugLog('📝 Polling mode - Setting review content')
+              this.setStreamedReviewContent(task.review_feedback)
             }
             if (task.final_test_cases) {
-              console.log('🎯 Polling mode - Setting final test cases')
-              this.finalTestCases = task.final_test_cases
+              this.debugLog('🎯 Polling mode - Setting final test cases')
+              this.setFinalTestCases(task.final_test_cases)
             }
 
             clearInterval(this.pollInterval)
@@ -1048,6 +1265,11 @@ export default {
         clearInterval(this.pollInterval)
         this.pollInterval = null
       }
+      if (this.eventSource) {
+        this.eventSource.close()
+        this.eventSource = null
+      }
+      this.flushStreamContent()
       this.isGenerating = false
       this.currentTaskId = null
       ElMessage.info(this.$t('requirementAnalysis.generationCancelled'))
@@ -1181,10 +1403,8 @@ export default {
       this.showResults = false;
       this.generationResult = null;
 
-      // 清空流式内容和最终版用例
-      this.streamedContent = '';
-      this.streamedReviewContent = '';
-      this.finalTestCases = '';
+      // 清空流式内容、HTML缓存和待刷新缓冲区
+      this.resetStreamBuffers();
 
       if (this.pollInterval) {
         clearInterval(this.pollInterval);
@@ -1207,50 +1427,7 @@ export default {
       return `${year}-${month}-${day} ${hours}:${minutes}`;
     },
 
-    // 格式化Markdown为HTML（简化版）
-    formatMarkdown(content) {
-      if (!content) return '';
-
-      // 先去除"新增"标记，在markdown转换之前处理
-      // 这样可以避免markdown转换后无法匹配的问题
-      let html = content
-          .replace(/\*\*新增\*\*-/g, '')  // **新增**-xxx -> xxx (保留xxx的原有格式)
-          .replace(/新增-/g, '');  // 新增-xxx -> xxx (保留xxx的原有格式)
-
-      // 转义HTML特殊字符
-      html = html
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
-
-      // 转换Markdown语法
-      // 标题 #
-      html = html.replace(/^#{6}\s+(.+)$/gm, '<h6>$1</h6>');
-      html = html.replace(/^#{5}\s+(.+)$/gm, '<h5>$1</h5>');
-      html = html.replace(/^#{4}\s+(.+)$/gm, '<h4>$1</h4>');
-      html = html.replace(/^#{3}\s+(.+)$/gm, '<h3>$1</h3>');
-      html = html.replace(/^#{2}\s+(.+)$/gm, '<h2>$1</h2>');
-      html = html.replace(/^#{1}\s+(.+)$/gm, '<h1>$1</h1>');
-
-      // 粗体 **text** 或 __text__
-      html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-      html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
-
-      // 斜体 *text* 或 _text_
-      html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-      html = html.replace(/_(.+?)_/g, '<em>$1</em>');
-
-      // 代码块 ```code```
-      html = html.replace(/```([\s\S]+?)```/g, '<pre><code>$1</code></pre>');
-
-      // 行内代码 `code`
-      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-      // 换行符转换为<br>
-      html = html.replace(/\n/g, '<br>');
-
-      return html;
-    },
+    formatMarkdown,
 
     // 将HTML的<br>标签转换为换行符（用于Excel导出）
     convertBrToNewline(text) {
@@ -2123,8 +2300,58 @@ export default {
   font-size: 0.9rem;
   line-height: 1.6;
   color: #2c3e50;
-  white-space: pre-wrap;
   word-wrap: break-word;
+}
+
+.stream-content :deep(p) {
+  margin: 0 0 0.85em;
+}
+
+.stream-content :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.stream-content :deep(ul),
+.stream-content :deep(ol) {
+  margin: 0.5em 0 1em 1.4em;
+  padding-left: 1.2em;
+}
+
+.stream-content :deep(li) {
+  margin: 0.35em 0;
+}
+
+.stream-content :deep(blockquote) {
+  margin: 0.85em 0;
+  padding: 8px 12px;
+  border-left: 4px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.stream-content :deep(table) {
+  width: 100%;
+  margin: 0.85em 0 1em;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.stream-content :deep(th),
+.stream-content :deep(td) {
+  padding: 8px 10px;
+  border: 1px solid #d9e2ec;
+  vertical-align: top;
+}
+
+.stream-content :deep(th) {
+  background: #f1f5f9;
+  font-weight: 600;
+}
+
+.stream-content :deep(hr) {
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid #e2e8f0;
 }
 
 .stream-content::-webkit-scrollbar {
@@ -2178,19 +2405,19 @@ export default {
   }
 }
 
-.stream-content h1,
-.stream-content h2,
-.stream-content h3,
-.stream-content h4,
-.stream-content h5,
-.stream-content h6 {
+.stream-content :deep(h1),
+.stream-content :deep(h2),
+.stream-content :deep(h3),
+.stream-content :deep(h4),
+.stream-content :deep(h5),
+.stream-content :deep(h6) {
   margin-top: 1em;
   margin-bottom: 0.5em;
   color: #2c3e50;
   font-weight: 600;
 }
 
-.stream-content code {
+.stream-content :deep(code) {
   background: #f1f3f5;
   padding: 2px 6px;
   border-radius: 4px;
@@ -2198,7 +2425,7 @@ export default {
   font-size: 0.85em;
 }
 
-.stream-content pre {
+.stream-content :deep(pre) {
   background: #f1f3f5;
   padding: 12px;
   border-radius: 6px;
@@ -2206,7 +2433,7 @@ export default {
   margin: 10px 0;
 }
 
-.stream-content pre code {
+.stream-content :deep(pre code) {
   background: none;
   padding: 0;
 }

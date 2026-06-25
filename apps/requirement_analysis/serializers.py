@@ -249,6 +249,10 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     project_name = serializers.CharField(source='project.name', read_only=True)
+    requirement_reviewer_model_name = serializers.CharField(source='requirement_reviewer_model_config.name', read_only=True)
+    requirement_analyzer_model_name = serializers.CharField(source='requirement_analyzer_model_config.name', read_only=True)
+    requirement_reviewer_prompt_name = serializers.CharField(source='requirement_reviewer_prompt_config.name', read_only=True)
+    requirement_analyzer_prompt_name = serializers.CharField(source='requirement_analyzer_prompt_config.name', read_only=True)
     writer_model_name = serializers.CharField(source='writer_model_config.name', read_only=True)
     reviewer_model_name = serializers.CharField(source='reviewer_model_config.name', read_only=True)
     writer_prompt_name = serializers.CharField(source='writer_prompt_config.name', read_only=True)
@@ -257,14 +261,21 @@ class TestCaseGenerationTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestCaseGenerationTask
         fields = ['id', 'task_id', 'title', 'requirement_text', 'status', 'status_display',
-                 'progress', 'project', 'project_name', 'writer_model_config', 'writer_model_name', 
+                 'progress', 'project', 'project_name',
+                 'requirement_reviewer_model_config', 'requirement_reviewer_model_name',
+                 'requirement_analyzer_model_config', 'requirement_analyzer_model_name',
+                 'requirement_reviewer_prompt_config', 'requirement_reviewer_prompt_name',
+                 'requirement_analyzer_prompt_config', 'requirement_analyzer_prompt_name',
+                 'requirement_review_result', 'requirement_analysis_result',
+                 'writer_model_config', 'writer_model_name',
                  'reviewer_model_config', 'reviewer_model_name', 'writer_prompt_config', 'writer_prompt_name',
                  'reviewer_prompt_config', 'reviewer_prompt_name', 'generated_test_cases',
                  'review_feedback', 'final_test_cases', 'generation_log', 'error_message',
                  'created_by', 'created_by_name', 'created_at', 'updated_at', 'completed_at']
-        read_only_fields = ['task_id', 'status', 'progress', 'generated_test_cases', 
-                          'review_feedback', 'final_test_cases', 'generation_log', 
-                          'error_message', 'created_by', 'completed_at']
+        read_only_fields = ['task_id', 'status', 'progress', 'generated_test_cases',
+                          'review_feedback', 'final_test_cases', 'generation_log',
+                          'error_message', 'created_by', 'completed_at',
+                          'requirement_review_result', 'requirement_analysis_result']
     
     def create(self, validated_data):
         # 自动设置创建者和任务ID
@@ -288,8 +299,6 @@ class TestCaseGenerationRequestSerializer(serializers.Serializer):
     """新的测试用例生成请求序列化器"""
     title = serializers.CharField(max_length=200, help_text="任务标题")
     requirement_text = serializers.CharField(help_text="需求描述")
-    use_writer_model = serializers.BooleanField(default=True, help_text="是否使用编写模型")
-    use_reviewer_model = serializers.BooleanField(default=True, help_text="是否使用评审模型")
 
 
 class GenerationConfigSerializer(serializers.ModelSerializer):

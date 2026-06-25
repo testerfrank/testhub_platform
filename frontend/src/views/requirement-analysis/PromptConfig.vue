@@ -27,7 +27,7 @@
                 <h3>{{ config.name }}</h3>
                 <div class="config-badges">
                   <span class="type-badge" :class="config.prompt_type">
-                    {{ config.prompt_type === 'writer' ? $t('promptConfig.writerPrompt') : $t('promptConfig.reviewerPrompt') }}
+                    {{ getPromptTypeLabel(config.prompt_type) }}
                   </span>
                   <span class="status-badge" :class="{ active: config.is_active }">
                     {{ config.is_active ? $t('promptConfig.enabled') : $t('promptConfig.disabled') }}
@@ -105,6 +105,8 @@
               <label>{{ $t('promptConfig.promptType') }} <span class="required">*</span></label>
               <select v-model="configForm.prompt_type" class="form-select" required>
                 <option value="">{{ $t('promptConfig.selectPromptType') }}</option>
+                <option value="requirement_reviewer">需求评审提示词</option>
+                <option value="requirement_analyzer">需求分析提示词</option>
                 <option value="writer">{{ $t('promptConfig.writerPrompt') }}</option>
                 <option value="reviewer">{{ $t('promptConfig.reviewerPrompt') }}</option>
               </select>
@@ -173,7 +175,7 @@
               <div class="meta-item">
                 <label>{{ $t('promptConfig.type') }}</label>
                 <span class="type-badge" :class="previewConfig.prompt_type">
-                  {{ previewConfig.prompt_type === 'writer' ? $t('promptConfig.writerPrompt') : $t('promptConfig.reviewerPrompt') }}
+                  {{ getPromptTypeLabel(previewConfig.prompt_type) }}
                 </span>
               </div>
               <div class="meta-item">
@@ -202,6 +204,18 @@
         <div class="modal-body">
           <div class="defaults-content">
             <div class="tabs">
+              <button
+                class="tab-btn"
+                :class="{ active: activeTab === 'requirement_reviewer' }"
+                @click="activeTab = 'requirement_reviewer'">
+                需求评审
+              </button>
+              <button
+                class="tab-btn"
+                :class="{ active: activeTab === 'requirement_analyzer' }"
+                @click="activeTab = 'requirement_analyzer'">
+                需求分析
+              </button>
               <button
                 class="tab-btn"
                 :class="{ active: activeTab === 'writer' }"
@@ -258,10 +272,12 @@ export default {
       editingConfigId: null,
       previewConfig: {},
       defaultPrompts: {
+        requirement_reviewer: '',
+        requirement_analyzer: '',
         writer: '',
         reviewer: ''
       },
-      activeTab: 'writer',
+      activeTab: 'requirement_reviewer',
       configForm: {
         name: '',
         prompt_type: '',
@@ -277,7 +293,13 @@ export default {
 
   methods: {
     getPromptTypeLabel(promptType) {
-      return promptType === 'writer' ? this.$t('promptConfig.writerPrompt') : this.$t('promptConfig.reviewerPrompt')
+      const labels = {
+        requirement_reviewer: '需求评审提示词',
+        requirement_analyzer: '需求分析提示词',
+        writer: this.$t('promptConfig.writerPrompt'),
+        reviewer: this.$t('promptConfig.reviewerPrompt')
+      }
+      return labels[promptType] || promptType
     },
 
     getExistingPromptConfig(promptType, excludeId = null) {
@@ -285,7 +307,7 @@ export default {
     },
 
     getMissingPromptTypes() {
-      return ['writer', 'reviewer'].filter(type => !this.getExistingPromptConfig(type))
+      return ['requirement_reviewer', 'requirement_analyzer', 'writer', 'reviewer'].filter(type => !this.getExistingPromptConfig(type))
     },
 
     formatApiError(error, fallbackText) {
@@ -360,7 +382,7 @@ export default {
       const missingTypes = this.getMissingPromptTypes()
 
       if (missingTypes.length === 0) {
-        const existingTypes = ['writer', 'reviewer'].map(type => this.getPromptTypeLabel(type))
+        const existingTypes = ['requirement_reviewer', 'requirement_analyzer', 'writer', 'reviewer'].map(type => this.getPromptTypeLabel(type))
         ElMessage.warning(this.$t('promptConfig.promptExists', { types: existingTypes.join('、') }))
         return
       }
@@ -384,29 +406,27 @@ export default {
         const missingTypes = this.getMissingPromptTypes()
 
         if (missingTypes.length === 0) {
-          const existingTypes = ['writer', 'reviewer'].map(type => this.getPromptTypeLabel(type))
+          const existingTypes = ['requirement_reviewer', 'requirement_analyzer', 'writer', 'reviewer'].map(type => this.getPromptTypeLabel(type))
           ElMessage.warning(this.$t('promptConfig.promptExists', { types: existingTypes.join('、') }))
           return
         }
 
-        // 创建编写提示词配置
-        if (missingTypes.includes('writer') && this.defaultPrompts.writer) {
-          await api.post('/requirement-analysis/prompts/', {
-            name: this.$t('promptConfig.defaultWriterName'),
-            prompt_type: 'writer',
-            content: this.defaultPrompts.writer,
-            is_active: true
-          })
-        }
+        const defaultPromptConfigs = [
+          { type: 'requirement_reviewer', name: '默认需求评审提示词' },
+          { type: 'requirement_analyzer', name: '默认需求分析提示词' },
+          { type: 'writer', name: this.$t('promptConfig.defaultWriterName') },
+          { type: 'reviewer', name: this.$t('promptConfig.defaultReviewerName') }
+        ]
 
-        // 创建评审提示词配置
-        if (missingTypes.includes('reviewer') && this.defaultPrompts.reviewer) {
-          await api.post('/requirement-analysis/prompts/', {
-            name: this.$t('promptConfig.defaultReviewerName'),
-            prompt_type: 'reviewer',
-            content: this.defaultPrompts.reviewer,
-            is_active: true
-          })
+        for (const item of defaultPromptConfigs) {
+          if (missingTypes.includes(item.type) && this.defaultPrompts[item.type]) {
+            await api.post('/requirement-analysis/prompts/', {
+              name: item.name,
+              prompt_type: item.type,
+              content: this.defaultPrompts[item.type],
+              is_active: true
+            })
+          }
         }
 
         ElMessage.success(this.$t('promptConfig.defaultsLoadSuccess'))
@@ -512,8 +532,8 @@ export default {
 
     closeDefaultsModal() {
       this.showDefaultsModal = false
-      this.defaultPrompts = { writer: '', reviewer: '' }
-      this.activeTab = 'writer'
+      this.defaultPrompts = { requirement_reviewer: '', requirement_analyzer: '', writer: '', reviewer: '' }
+      this.activeTab = 'requirement_reviewer'
     },
 
     truncateContent(content, maxLength) {

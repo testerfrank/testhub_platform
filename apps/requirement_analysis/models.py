@@ -209,6 +209,8 @@ class AIModelConfig(models.Model):
     ]
 
     ROLE_CHOICES = [
+        ('requirement_reviewer', '需求评审专家'),
+        ('requirement_analyzer', '需求分析专家'),
         ('writer', '测试用例编写专家'),
         ('reviewer', '测试评审专家'),
         ('browser_use_text', 'Browser Use - 文本模式'),
@@ -251,6 +253,8 @@ class AIModelConfig(models.Model):
 class PromptConfig(models.Model):
     """提示词配置模型"""
     PROMPT_CHOICES = [
+        ('requirement_reviewer', '需求评审提示词'),
+        ('requirement_analyzer', '需求分析提示词'),
         ('writer', '用例编写提示词'),
         ('reviewer', '用例评审提示词'),
     ]
@@ -330,8 +334,10 @@ class TestCaseGenerationTask(models.Model):
     """测试用例生成任务模型"""
     STATUS_CHOICES = [
         ('pending', '等待中'),
-        ('generating', '生成中'),
-        ('reviewing', '评审中'),
+        ('reviewing_requirement', '需求评审中'),
+        ('analyzing_requirement', '需求分析中'),
+        ('generating', '用例生成中'),
+        ('reviewing', '用例评审中'),
         ('revising', '改进中'),
         ('completed', '已完成'),
         ('failed', '失败'),
@@ -346,7 +352,7 @@ class TestCaseGenerationTask(models.Model):
     task_id = models.CharField(max_length=50, unique=True, verbose_name='任务ID')
     title = models.CharField(max_length=200, verbose_name='任务标题')
     requirement_text = models.TextField(verbose_name='需求描述')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
     progress = models.IntegerField(default=0, verbose_name='进度百分比')
 
     # 流式输出配置
@@ -366,6 +372,14 @@ class TestCaseGenerationTask(models.Model):
         verbose_name='最后流式更新时间'
     )
 
+    # 需求评审流式缓冲区和状态跟踪
+    requirement_review_buffer = models.TextField(blank=True, verbose_name='需求评审流式输出缓冲区')
+    requirement_review_position = models.IntegerField(default=0, verbose_name='需求评审流式输出位置')
+
+    # 需求分析流式缓冲区和状态跟踪
+    requirement_analysis_buffer = models.TextField(blank=True, verbose_name='需求分析流式输出缓冲区')
+    requirement_analysis_position = models.IntegerField(default=0, verbose_name='需求分析流式输出位置')
+
     project = models.ForeignKey(
         Project,
         on_delete=models.SET_NULL,
@@ -376,6 +390,23 @@ class TestCaseGenerationTask(models.Model):
     )
 
     # 配置参数
+    requirement_reviewer_model_config = models.ForeignKey(
+        AIModelConfig, on_delete=models.SET_NULL, null=True,
+        related_name='requirement_reviewer_tasks', verbose_name='需求评审模型配置'
+    )
+    requirement_analyzer_model_config = models.ForeignKey(
+        AIModelConfig, on_delete=models.SET_NULL, null=True,
+        related_name='requirement_analyzer_tasks', verbose_name='需求分析模型配置'
+    )
+    requirement_reviewer_prompt_config = models.ForeignKey(
+        PromptConfig, on_delete=models.SET_NULL, null=True,
+        related_name='requirement_reviewer_tasks', verbose_name='需求评审提示词配置'
+    )
+    requirement_analyzer_prompt_config = models.ForeignKey(
+        PromptConfig, on_delete=models.SET_NULL, null=True,
+        related_name='requirement_analyzer_tasks', verbose_name='需求分析提示词配置'
+    )
+
     writer_model_config = models.ForeignKey(
         AIModelConfig, on_delete=models.SET_NULL, null=True,
         related_name='writer_tasks', verbose_name='编写模型配置'
@@ -392,6 +423,10 @@ class TestCaseGenerationTask(models.Model):
         PromptConfig, on_delete=models.SET_NULL, null=True,
         related_name='reviewer_tasks', verbose_name='评审提示词配置'
     )
+
+    # 需求评审与分析结果
+    requirement_review_result = models.TextField(blank=True, verbose_name='需求评审结果')
+    requirement_analysis_result = models.TextField(blank=True, verbose_name='需求分析结果')
 
     # 生成结果
     generated_test_cases = models.TextField(blank=True, verbose_name='生成的测试用例')
@@ -725,6 +760,65 @@ class AIModelService:
                 raise e
 
     @staticmethod
+    async def review_requirement_stream(task: TestCaseGenerationTask, callback=None) -> str:
+        """流式生成需求质量评审报告"""
+        prompt = task.requirement_reviewer_prompt_config.content
+        user_message = (
+            f"请对以下需求进行质量评审。不要生成测试用例。\n\n"
+            f"【需求标题】\n{task.title}\n\n"
+            f"【需求内容】\n{task.requirement_text}"
+        )
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_message},
+        ]
+        generator = AIModelService.call_openai_compatible_api_stream(
+            task.requirement_reviewer_model_config,
+            messages,
+            callback=callback,
+        )
+        full_content = ""
+        try:
+            async for chunk in generator:
+                full_content += chunk
+        finally:
+            try:
+                await generator.aclose()
+            except Exception as close_error:
+                logger.warning(f"关闭需求评审generator时出错: {close_error}")
+        return full_content
+
+    @staticmethod
+    async def analyze_requirement_stream(task: TestCaseGenerationTask, callback=None) -> str:
+        """流式生成测试设计分析报告"""
+        prompt = task.requirement_analyzer_prompt_config.content
+        user_message = (
+            f"请基于原始需求和需求质量评审报告，输出测试设计分析报告。不要生成测试用例。\n\n"
+            f"【需求标题】\n{task.title}\n\n"
+            f"【原始需求】\n{task.requirement_text}\n\n"
+            f"【需求质量评审报告】\n{task.requirement_review_result}"
+        )
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_message},
+        ]
+        generator = AIModelService.call_openai_compatible_api_stream(
+            task.requirement_analyzer_model_config,
+            messages,
+            callback=callback,
+        )
+        full_content = ""
+        try:
+            async for chunk in generator:
+                full_content += chunk
+        finally:
+            try:
+                await generator.aclose()
+            except Exception as close_error:
+                logger.warning(f"关闭需求分析generator时出错: {close_error}")
+        return full_content
+
+    @staticmethod
     async def generate_test_cases(task: TestCaseGenerationTask) -> str:
         """生成测试用例"""
         writer_prompt = task.writer_prompt_config.content
@@ -752,6 +846,13 @@ class AIModelService:
             rf"   - **如果在表格内容（如操作步骤、预期结果）中出现管道符 '|'，请使用HTML实体 '&#124;' 代替**。\n"
             rf"   - **绝对不要使用反斜杠转义（如 '\|'），这会导致输出混乱**。\n"
             rf"   - 示例：应输入 'a&#124;b' 而不是 'a|b' 或 'a\|b'。\n\n"
+            f"【需求质量评审报告】\n{task.requirement_review_result}\n\n"
+            f"【测试设计分析报告】\n{task.requirement_analysis_result}\n\n"
+            f"【覆盖要求】\n"
+            f"1. 必须覆盖测试设计分析报告中的测试覆盖矩阵。\n"
+            f"2. 每条用例必须在“关联分析项”列填写一个或多个分析项ID。\n"
+            f"3. 不得遗漏P0/P1分析项。\n"
+            f"4. 如果表格内容中出现管道符，请使用HTML实体 '&#124;'。\n\n"
             f"【需求文档内容】\n{task.requirement_text}"
         )
 
@@ -783,6 +884,9 @@ class AIModelService:
                 f"1. **覆盖率漏洞**：请仔细比对用例集是否覆盖了常见的异常场景（如断网、超时、数据冲突）和边界条件。\n"
                 f"2. **逻辑严密性**：检查预期结果是否具体、可验证（例如'提示错误'是不够的，需说明具体错误码或文案）。\n"
                 f"3. **冗余检查**：指出是否有重复或无效的用例。\n\n"
+                f"【原始需求】\n{task.requirement_text}\n\n"
+                f"【需求质量评审报告】\n{task.requirement_review_result}\n\n"
+                f"【测试设计分析报告】\n{task.requirement_analysis_result}\n\n"
                 f"【待评审用例】\n{test_cases}\n\n"
                 f"【输出格式要求】\n"
                 f"请输出一份包含评分、问题列表和改进建议的详细评审报告。"
@@ -843,6 +947,13 @@ class AIModelService:
             rf"   - **如果在表格内容（如操作步骤、预期结果）中出现管道符 '|'，请使用HTML实体 '&#124;' 代替**。\n"
             rf"   - **绝对不要使用反斜杠转义（如 '\|'），这会导致输出混乱**。\n"
             rf"   - 示例：应输入 'a&#124;b' 而不是 'a|b' 或 'a\|b'。\n\n"
+            f"【需求质量评审报告】\n{task.requirement_review_result}\n\n"
+            f"【测试设计分析报告】\n{task.requirement_analysis_result}\n\n"
+            f"【覆盖要求】\n"
+            f"1. 必须覆盖测试设计分析报告中的测试覆盖矩阵。\n"
+            f"2. 每条用例必须在“关联分析项”列填写一个或多个分析项ID。\n"
+            f"3. 不得遗漏P0/P1分析项。\n"
+            f"4. 如果表格内容中出现管道符，请使用HTML实体 '&#124;'。\n\n"
             f"【需求文档内容】\n{task.requirement_text}"
         )
 
@@ -910,6 +1021,9 @@ class AIModelService:
             f"1. **覆盖率漏洞**：请仔细比对用例集是否覆盖了常见的异常场景（如断网、超时、数据冲突）和边界条件。\n"
             f"2. **逻辑严密性**：检查预期结果是否具体、可验证（例如'提示错误'是不够的，需说明具体错误码或文案）。\n"
             f"3. **冗余检查**：指出是否有重复或无效的用例。\n\n"
+            f"【原始需求】\n{task.requirement_text}\n\n"
+            f"【需求质量评审报告】\n{task.requirement_review_result}\n\n"
+            f"【测试设计分析报告】\n{task.requirement_analysis_result}\n\n"
             f"【待评审用例】\n{test_cases}\n\n"
             f"【输出格式要求】\n"
             f"请输出一份包含评分、问题列表和改进建议的详细评审报告。"
@@ -971,8 +1085,10 @@ class AIModelService:
         # 构建改进指令
         user_message = (
             f"请根据以下专家评审意见，改进和完善测试用例。\n\n"
+            f"【测试设计分析报告】\n{task.requirement_analysis_result}\n\n"
             f"【原始测试用例】\n{original_test_cases}\n\n"
             f"【评审意见】\n{review_feedback}\n\n"
+            f"【修订要求补充】\n最终用例必须保留“关联分析项”列，并覆盖测试设计分析报告中的P0/P1分析项。\n\n"
             f"【改进要求】\n"
             f"1. 严格根据评审意见指出的问题进行修改\n"
             f"2. 补充缺失的测试场景\n"

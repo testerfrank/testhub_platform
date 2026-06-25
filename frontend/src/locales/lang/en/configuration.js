@@ -194,8 +194,11 @@ export default {
       other: 'Other'
     },
     roles: {
+      requirement_reviewer: 'Requirement Reviewer',
+      requirement_analyzer: 'Requirement Analyzer',
       writer: 'Test Case Writer',
-      reviewer: 'Test Reviewer'
+      reviewer: 'Test Reviewer',
+      browser_use_text: 'Browser Use - Text Mode'
     },
     messages: {
       loadFailed: 'Failed to load configurations',
