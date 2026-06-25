@@ -218,9 +218,9 @@
                 <el-icon><MagicStick /></el-icon>
                 <span>{{ $t('menu.aiCaseGenerationConfig') }}</span>
               </template>
-              <el-menu-item index="/configuration/ai-model">
+              <el-menu-item index="/configuration/models">
                 <el-icon><Cpu /></el-icon>
-                <span>{{ $t('menu.aiModelConfig') }}</span>
+                <span>模型管理</span>
               </el-menu-item>
               <el-menu-item index="/configuration/prompt-config">
                 <el-icon><Edit /></el-icon>
@@ -238,10 +238,6 @@
             <el-menu-item index="/configuration/app-env">
               <el-icon><Cellphone /></el-icon>
               <span>APP环境配置</span>
-            </el-menu-item>
-            <el-menu-item index="/configuration/ai-mode">
-              <el-icon><MagicStick /></el-icon>
-              <span>{{ $t('menu.aiModeConfig') }}</span>
             </el-menu-item>
             <el-menu-item index="/configuration/scheduled-task">
               <el-icon><Timer /></el-icon>
@@ -432,11 +428,12 @@ const breadcrumbTitle = computed(() => {
 
 
     // 配置中心
-    '/configuration/ai-model': t('menu.aiModelConfig'),
+    '/configuration/models': '模型管理',
+    '/configuration/ai-model': '模型管理',
     '/configuration/prompt-config': t('menu.promptConfig'),
     '/configuration/generation-config': t('menu.generationConfig'),
     '/configuration/ui-env': t('menu.uiEnvConfig'),
-    '/configuration/ai-mode': t('menu.aiModeConfig'),
+    '/configuration/ai-mode': '模型管理',
     '/configuration/scheduled-task': t('menu.scheduledTaskConfig'),
     '/configuration/dify': t('menu.difyConfig'),
     

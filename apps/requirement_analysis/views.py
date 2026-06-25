@@ -33,16 +33,16 @@ from django.db import models
 
 from .models import (
     RequirementDocument, RequirementAnalysis, BusinessRequirement,
-    GeneratedTestCase, AnalysisTask, AIModelConfig, PromptConfig, TestCaseGenerationTask,
-    GenerationConfig, AIModelService
+    GeneratedTestCase, AnalysisTask, AIModelConfig, AIModelProvider, AIModelUsageConfig,
+    PromptConfig, TestCaseGenerationTask, GenerationConfig, AIModelService
 )
 from .serializers import (
     RequirementDocumentSerializer, RequirementAnalysisSerializer,
     BusinessRequirementSerializer, GeneratedTestCaseSerializer,
     AnalysisTaskSerializer, DocumentUploadSerializer,
     TestCaseGenerationRequestSerializer, TestCaseReviewRequestSerializer,
-    AIModelConfigSerializer, PromptConfigSerializer, TestCaseGenerationTaskSerializer,
-    GenerationConfigSerializer
+    AIModelConfigSerializer, AIModelProviderSerializer, AIModelUsageConfigSerializer,
+    PromptConfigSerializer, TestCaseGenerationTaskSerializer, GenerationConfigSerializer
 )
 from .services import RequirementAnalysisService, DocumentProcessor
 
@@ -1215,6 +1215,131 @@ class AIModelConfigViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class AIModelProviderViewSet(viewsets.ModelViewSet):
+    queryset = AIModelProvider.objects.all()
+    serializer_class = AIModelProviderSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset().prefetch_related('usage_configs')
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+        provider_type = self.request.query_params.get('provider_type')
+        if provider_type:
+            queryset = queryset.filter(provider_type=provider_type)
+        return queryset.order_by('-created_at')
+
+    def destroy(self, request, *args, **kwargs):
+        provider = self.get_object()
+        usage_names = [usage.get_usage_type_display() for usage in provider.usage_configs.all()]
+        if usage_names:
+            return Response(
+                {'error': f'该模型正在被以下配置使用：{"、".join(usage_names)}。请先更换绑定后再删除。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    def _fetch_models_with_timeout(self, config, timeout=30.0):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(asyncio.wait_for(AIModelService.list_available_models(config), timeout=timeout))
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            finally:
+                loop.close()
+
+    @action(detail=False, methods=['post'], url_path='available_models')
+    def available_models_preview(self, request):
+        try:
+            data = request.data
+            missing_fields = [field for field in ['provider_type', 'api_key', 'base_url'] if not data.get(field)]
+            if missing_fields:
+                return Response({'success': False, 'message': f'缺少必填字段: {", ".join(missing_fields)}'}, status=status.HTTP_400_BAD_REQUEST)
+            preview_config = AIModelProvider(
+                name=data.get('name', '临时模型列表配置'),
+                provider_type=data.get('provider_type'),
+                api_key=data.get('api_key'),
+                base_url=data.get('base_url'),
+                model_name=data.get('model_name', 'temp-model'),
+                max_tokens=data.get('max_tokens') or 256,
+                temperature=data.get('temperature') if data.get('temperature') is not None else 0.7,
+                top_p=data.get('top_p') if data.get('top_p') is not None else 0.9,
+                is_active=False,
+            )
+            models = self._fetch_models_with_timeout(preview_config)
+            return Response({'success': True, 'message': f'成功获取{len(models)}个模型', 'models': models})
+        except asyncio.TimeoutError:
+            return Response({'success': False, 'message': '获取模型列表超时，请检查网络连接或API地址是否正确'}, status=status.HTTP_408_REQUEST_TIMEOUT)
+        except Exception as e:
+            return Response({'success': False, 'message': f'获取模型列表失败: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['get'], url_path='available_models')
+    def available_models(self, request, pk=None):
+        try:
+            models = self._fetch_models_with_timeout(self.get_object())
+            return Response({'success': True, 'message': f'成功获取{len(models)}个模型', 'models': models})
+        except asyncio.TimeoutError:
+            return Response({'success': False, 'message': '获取模型列表超时，请检查网络连接或API地址是否正确'}, status=status.HTTP_408_REQUEST_TIMEOUT)
+        except Exception as e:
+            return Response({'success': False, 'message': f'获取模型列表失败: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def test_connection(self, request, pk=None):
+        config = self.get_object()
+        test_messages = [
+            {'role': 'system', 'content': '你是一个AI助手'},
+            {'role': 'user', 'content': "请回复'连接成功'"},
+        ]
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(asyncio.wait_for(AIModelService.call_openai_compatible_api(config, test_messages), timeout=60.0))
+            return Response({'success': True, 'message': '连接测试成功', 'response': result.get('choices', [{}])[0].get('message', {}).get('content', '')})
+        except Exception as e:
+            return Response({'success': False, 'message': f'连接失败：{str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+
+class AIModelUsageConfigViewSet(viewsets.ModelViewSet):
+    queryset = AIModelUsageConfig.objects.select_related('model_provider')
+    serializer_class = AIModelUsageConfigSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        usage_type = self.request.query_params.get('usage_type')
+        if usage_type:
+            queryset = queryset.filter(usage_type=usage_type)
+        return queryset.order_by('usage_type')
+
+    @action(detail=False, methods=['get'], url_path='by_usage')
+    def by_usage(self, request):
+        usage_type = request.query_params.get('usage_type')
+        usage = self.get_queryset().filter(usage_type=usage_type).first()
+        if not usage:
+            return Response({'error': '未找到该业务用途的模型配置'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self.get_serializer(usage).data)
+
+    @action(detail=False, methods=['post'], url_path='bulk_upsert')
+    def bulk_upsert(self, request):
+        usages = request.data.get('usages') or []
+        if not isinstance(usages, list):
+            return Response({'error': 'usages 必须是数组'}, status=status.HTTP_400_BAD_REQUEST)
+        saved = []
+        for item in usages:
+            serializer = self.get_serializer(data=item)
+            serializer.is_valid(raise_exception=True)
+            saved.append(serializer.save())
+        return Response(self.get_serializer(saved, many=True).data)
+
+
 class PromptConfigViewSet(viewsets.ModelViewSet):
     """提示词配置视图集"""
     queryset = PromptConfig.objects.all()
@@ -1436,6 +1561,20 @@ class GenerationConfigViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def get_required_model_provider(usage_type):
+    usage_labels = dict(AIModelUsageConfig.USAGE_CHOICES)
+    usage = AIModelUsageConfig.objects.select_related('model_provider').filter(
+        usage_type=usage_type,
+        is_active=True,
+    ).first()
+    usage_name = usage_labels.get(usage_type, usage_type)
+    if not usage or not usage.model_provider:
+        raise ValueError(f'AI 用例模型配置不完整：请为“{usage_name}”选择模型')
+    if not usage.model_provider.is_active:
+        raise ValueError(f'“{usage_name}”绑定的模型已禁用，请启用该模型或重新选择')
+    return usage.model_provider
+
+
 class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
     """测试用例生成任务视图集"""
     queryset = TestCaseGenerationTask.objects.all()
@@ -1474,20 +1613,20 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             validated_data = serializer.validated_data
 
             # 获取活跃的配置
-            writer_config = None
-            reviewer_config = None
+            requirement_reviewer_provider = None
+            requirement_analyzer_provider = None
+            writer_provider = None
+            reviewer_provider = None
             writer_prompt = None
             reviewer_prompt = None
 
             if validated_data.get('use_writer_model', True):
-                # 优先查找任意启用的编写模型配置
-                writer_config = AIModelConfig.objects.filter(role='writer', is_active=True).first()
-
-                if not writer_config:
-                    return Response(
-                        {'error': '未找到可用的测试用例编写模型配置'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+                try:
+                    requirement_reviewer_provider = get_required_model_provider('requirement_reviewer')
+                    requirement_analyzer_provider = get_required_model_provider('requirement_analyzer')
+                    writer_provider = get_required_model_provider('testcase_writer')
+                except ValueError as e:
+                    return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
                 writer_prompt = PromptConfig.get_active_config('writer')
                 if not writer_prompt:
@@ -1497,14 +1636,10 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                     )
 
             if validated_data.get('use_reviewer_model', True):
-                # 优先查找任意启用的评审模型配置
-                reviewer_config = AIModelConfig.objects.filter(role='reviewer', is_active=True).first()
-
-                if not reviewer_config:
-                    return Response(
-                        {'error': '未找到可用的测试用例评审模型配置'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+                try:
+                    reviewer_provider = get_required_model_provider('testcase_reviewer')
+                except ValueError as e:
+                    return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
                 reviewer_prompt = PromptConfig.get_active_config('reviewer')
                 if not reviewer_prompt:
@@ -1517,8 +1652,10 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
             task_data = {
                 'title': validated_data['title'],
                 'requirement_text': validated_data['requirement_text'],
-                'writer_model_config': writer_config.id if writer_config else None,
-                'reviewer_model_config': reviewer_config.id if reviewer_config else None,
+                'requirement_reviewer_model_provider': requirement_reviewer_provider.id if requirement_reviewer_provider else None,
+                'requirement_analyzer_model_provider': requirement_analyzer_provider.id if requirement_analyzer_provider else None,
+                'writer_model_provider': writer_provider.id if writer_provider else None,
+                'reviewer_model_provider': reviewer_provider.id if reviewer_provider else None,
                 'writer_prompt_config': writer_prompt.id if writer_prompt else None,
                 'reviewer_prompt_config': reviewer_prompt.id if reviewer_prompt else None,
             }
@@ -1627,7 +1764,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                         task.save()
 
                                         # 流式评审和改进（根据生成配置决定是否执行）
-                                        if enable_auto_review and task.reviewer_model_config and task.reviewer_prompt_config:
+                                        if enable_auto_review and task.reviewer_model_provider and task.reviewer_prompt_config:
                                             try:
                                                 task.status = 'reviewing'
                                                 task.progress = 70
@@ -1790,7 +1927,7 @@ class TestCaseGenerationTaskViewSet(viewsets.ModelViewSet):
                                         task.save()
 
                                         # 评审和改进测试用例（根据生成配置决定是否执行）
-                                        if enable_auto_review and task.reviewer_model_config and task.reviewer_prompt_config:
+                                        if enable_auto_review and task.reviewer_model_provider and task.reviewer_prompt_config:
                                             try:
                                                 task.status = 'reviewing'
                                                 task.progress = 70
@@ -3179,32 +3316,18 @@ class ConfigStatusViewSet(viewsets.ViewSet):
     def check(self, request):
         """检查AI配置状态"""
         try:
-            # 检查AI模型配置
-            ai_model_configs = AIModelConfig.objects.filter(
-                role__in=['writer', 'reviewer']
-            ).exclude(role__in=['browser_use_text', 'browser_use_vision'])
-
-            # 检查writer模型配置
-            writer_model_enabled = ai_model_configs.filter(
-                role='writer',
-                is_active=True
-            ).first()
-
-            writer_model_disabled = ai_model_configs.filter(
-                role='writer',
-                is_active=False
-            ).first()
-
-            # 检查reviewer模型配置
-            reviewer_model_enabled = ai_model_configs.filter(
-                role='reviewer',
-                is_active=True
-            ).first()
-
-            reviewer_model_disabled = ai_model_configs.filter(
-                role='reviewer',
-                is_active=False
-            ).first()
+            usages_by_type = {
+                usage.usage_type: usage
+                for usage in AIModelUsageConfig.objects.select_related('model_provider').filter(
+                    usage_type__in=['testcase_writer', 'testcase_reviewer']
+                )
+            }
+            writer_usage = usages_by_type.get('testcase_writer')
+            reviewer_usage = usages_by_type.get('testcase_reviewer')
+            writer_model_enabled = writer_usage.model_provider if writer_usage and writer_usage.is_active and writer_usage.model_provider.is_active else None
+            writer_model_disabled = writer_usage.model_provider if writer_usage and not writer_model_enabled else None
+            reviewer_model_enabled = reviewer_usage.model_provider if reviewer_usage and reviewer_usage.is_active and reviewer_usage.model_provider.is_active else None
+            reviewer_model_disabled = reviewer_usage.model_provider if reviewer_usage and not reviewer_model_enabled else None
 
             # 检查writer提示词配置
             writer_prompt_enabled = PromptConfig.objects.filter(

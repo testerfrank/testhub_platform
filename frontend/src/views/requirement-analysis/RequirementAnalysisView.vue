@@ -549,7 +549,7 @@ export default {
 
       // 2. 检查必需的模型配置（writer_model）
       if (!this.configStatus.writer_model.configured || !this.configStatus.writer_model.enabled) {
-        this.$router.push('/configuration/ai-model')
+        this.$router.push('/configuration/models')
         return
       }
 
@@ -561,7 +561,7 @@ export default {
 
       // 4. 检查可选的评审模型（reviewer_model）
       if (!this.configStatus.reviewer_model.configured || !this.configStatus.reviewer_model.enabled) {
-        this.$router.push('/configuration/ai-model')
+        this.$router.push('/configuration/models')
         return
       }
 

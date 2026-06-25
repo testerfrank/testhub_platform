@@ -941,20 +941,24 @@ class BaseBrowserAgent:
         self.case_name = case_name or "Adhoc Task"  # 用例名称
 
         # Load Config from DB
-        from apps.requirement_analysis.models import AIModelConfig
+        from apps.requirement_analysis.models import AIModelUsageConfig
 
-        # Select Config (always use text mode config)
-        role_name = 'browser_use_text'
-        config_obj = AIModelConfig.objects.filter(role=role_name, is_active=True).first()
+        usage = AIModelUsageConfig.objects.select_related('model_provider').filter(
+            usage_type='browser_use_text',
+            is_active=True,
+        ).first()
 
         model_config = {}
-        if config_obj:
+        if usage and usage.model_provider:
+            if not usage.model_provider.is_active:
+                raise ValueError('“Browser Use 文本模式”绑定的模型已禁用，请启用该模型或重新选择')
+            config_obj = usage.model_provider
             model_config = {
                 'api_key': config_obj.api_key,
                 'base_url': config_obj.base_url,
                 'model_name': config_obj.model_name,
-                'provider': config_obj.model_type,
-                'temperature': config_obj.temperature  # 读取配置的temperature
+                'provider': config_obj.provider_type,
+                'temperature': config_obj.temperature
             }
 
         self.api_key = model_config.get('api_key') or os.getenv('AUTH_TOKEN')

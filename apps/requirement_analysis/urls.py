@@ -7,6 +7,8 @@ from .views import (
     GeneratedTestCaseViewSet,
     AnalysisTaskViewSet,
     AIModelConfigViewSet,
+    AIModelProviderViewSet,
+    AIModelUsageConfigViewSet,
     PromptConfigViewSet,
     GenerationConfigViewSet,
     TestCaseGenerationTaskViewSet,
@@ -23,6 +25,8 @@ router.register(r'requirements', BusinessRequirementViewSet, basename='businessr
 router.register(r'test-cases', GeneratedTestCaseViewSet, basename='generatedtestcase')
 router.register(r'tasks', AnalysisTaskViewSet, basename='analysistask')
 router.register(r'ai-models', AIModelConfigViewSet, basename='aimodelconfig')
+router.register(r'model-providers', AIModelProviderViewSet, basename='aimodelprovider')
+router.register(r'model-usages', AIModelUsageConfigViewSet, basename='aimodelusageconfig')
 router.register(r'prompts', PromptConfigViewSet, basename='promptconfig')
 router.register(r'generation-config', GenerationConfigViewSet, basename='generationconfig')
 router.register(r'testcase-generation', TestCaseGenerationTaskViewSet, basename='testcasegenerationtask')

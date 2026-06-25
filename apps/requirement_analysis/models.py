@@ -248,6 +248,81 @@ class AIModelConfig(models.Model):
         ).first()
 
 
+class AIModelProvider(models.Model):
+    """统一模型池配置"""
+    PROVIDER_CHOICES = [
+        ('deepseek', 'DeepSeek'),
+        ('qwen', '通义千问'),
+        ('siliconflow', '硅基流动'),
+        ('zhipu', '智谱'),
+        ('xiaomi', '小米'),
+        ('openai_compatible', 'OpenAI Compatible'),
+        ('other', '其他'),
+    ]
+
+    name = models.CharField(max_length=100, verbose_name='配置名称')
+    provider_type = models.CharField(max_length=30, choices=PROVIDER_CHOICES, verbose_name='模型提供商')
+    api_key = models.CharField(max_length=200, verbose_name='API Key', blank=True, null=True)
+    base_url = models.URLField(verbose_name='API Base URL')
+    model_name = models.CharField(max_length=100, verbose_name='模型名称')
+    max_tokens = models.IntegerField(default=4096, verbose_name='最大Token数')
+    temperature = models.FloatField(default=0.7, verbose_name='温度参数')
+    top_p = models.FloatField(default=0.9, verbose_name='Top P参数')
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'ai_model_provider'
+        verbose_name = 'AI模型池配置'
+        verbose_name_plural = 'AI模型池配置'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} - {self.model_name}"
+
+    @property
+    def model_type(self):
+        return self.provider_type
+
+    def get_model_type_display(self):
+        return self.get_provider_type_display()
+
+
+class AIModelUsageConfig(models.Model):
+    """业务用途与模型池绑定"""
+    USAGE_CHOICES = [
+        ('requirement_reviewer', '需求评审专家'),
+        ('requirement_analyzer', '需求分析专家'),
+        ('testcase_writer', '测试用例编写专家'),
+        ('testcase_reviewer', '测试用例评审专家'),
+        ('browser_use_text', 'Browser Use 文本模式'),
+        ('browser_use_vision', 'Browser Use 视觉模式'),
+    ]
+
+    usage_type = models.CharField(max_length=40, choices=USAGE_CHOICES, unique=True, verbose_name='业务用途')
+    model_provider = models.ForeignKey(
+        AIModelProvider,
+        on_delete=models.PROTECT,
+        related_name='usage_configs',
+        verbose_name='模型配置'
+    )
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'ai_model_usage_config'
+        verbose_name = 'AI模型用途绑定'
+        verbose_name_plural = 'AI模型用途绑定'
+        ordering = ['usage_type']
+
+    def __str__(self):
+        return f"{self.get_usage_type_display()} -> {self.model_provider.name}"
+
+
 class PromptConfig(models.Model):
     """提示词配置模型"""
     PROMPT_CHOICES = [
@@ -383,6 +458,22 @@ class TestCaseGenerationTask(models.Model):
     reviewer_model_config = models.ForeignKey(
         AIModelConfig, on_delete=models.SET_NULL, null=True,
         related_name='reviewer_tasks', verbose_name='评审模型配置'
+    )
+    requirement_reviewer_model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='requirement_reviewer_tasks', verbose_name='需求评审模型配置'
+    )
+    requirement_analyzer_model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='requirement_analyzer_tasks', verbose_name='需求分析模型配置'
+    )
+    writer_model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='writer_generation_tasks', verbose_name='用例编写模型配置'
+    )
+    reviewer_model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='reviewer_generation_tasks', verbose_name='用例评审模型配置'
     )
     writer_prompt_config = models.ForeignKey(
         PromptConfig, on_delete=models.SET_NULL, null=True,
@@ -763,7 +854,7 @@ class AIModelService:
         # 所有支持的模型都使用兼容OpenAI的接口
         # 使用配置的max_tokens，不硬编码限制
         response = await AIModelService.call_openai_compatible_api(
-            task.writer_model_config,
+            task.writer_model_provider,
             messages
             # 不再硬编码max_tokens，使用配置文件中的值（如32000）
         )
@@ -795,7 +886,7 @@ class AIModelService:
             ]
 
             # 所有支持的模型都使用兼容OpenAI的接口
-            response = await AIModelService.call_openai_compatible_api(task.reviewer_model_config, messages)
+            response = await AIModelService.call_openai_compatible_api(task.reviewer_model_provider, messages)
 
             return response['choices'][0]['message']['content']
         except Exception as e:
@@ -854,7 +945,7 @@ class AIModelService:
         # 流式调用API，确保正确关闭生成器
         # 使用配置的max_tokens，不硬编码限制
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.writer_model_config,
+            task.writer_model_provider,
             messages,
             callback=callback
             # 不再硬编码max_tokens，使用配置文件中的值（如32000）
@@ -923,7 +1014,7 @@ class AIModelService:
 
         # 流式调用API，确保正确关闭生成器
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.reviewer_model_config,
+            task.reviewer_model_provider,
             messages,
             callback=callback
         )
@@ -1016,7 +1107,7 @@ class AIModelService:
         # 流式调用API，确保正确关闭生成器
         # 使用配置的max_tokens，不硬编码限制
         generator = AIModelService.call_openai_compatible_api_stream(
-            task.writer_model_config,
+            task.writer_model_provider,
             messages,
             callback=callback
             # 不再硬编码max_tokens，使用配置文件中的值（如32000）

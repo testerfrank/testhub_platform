@@ -45,7 +45,8 @@ PAGE_LABELS = {
     '/app-automation/dashboard': 'APP自动化仪表盘',
     '/ai-intelligent-mode/testing': 'AI智能模式',
     '/data-factory': '数据工厂',
-    '/configuration/ai-model': 'AI模型配置',
+    '/configuration/models': '模型管理',
+    '/configuration/ai-model': '模型管理',
 }
 
 PAGE_PREFIX_LABELS = [

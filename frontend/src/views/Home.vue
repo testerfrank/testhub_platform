@@ -261,7 +261,7 @@ const handleNavigate = (type) => {
     'app': '/app-automation/dashboard',
     'ai-intelligent': '/ai-intelligent-mode/testing',
     'assistant': '/ai-generation/assistant',
-    'config': '/configuration/ai-model',
+    'config': '/configuration/models',
     'data': '/data-factory'
   }
 
