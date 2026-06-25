@@ -1242,8 +1242,8 @@ class PromptConfigViewSet(viewsets.ModelViewSet):
             default_prompt_files = {
                 'requirement_reviewer': 'requirement_reviewer.md',
                 'requirement_analyzer': 'requirement_analyzer.md',
-                'writer': 'tester.md',
-                'reviewer': 'tester_pro.md',
+                'writer': 'testcase_writer.md',
+                'reviewer': 'testcase_reviewer.md',
             }
 
             defaults = {}

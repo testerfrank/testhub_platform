@@ -122,8 +122,8 @@ UI automation AI mode uses `browser-use` library with LangChain for intelligent 
 ## Testing Prompt Templates
 
 Custom prompts for AI test case generation are defined in:
-- `tester.md`: Test case writer persona and output format
-- `tester_pro.md`: Test case reviewer persona
+- `testcase_writer.md`: Test case writer persona and output format
+- `testcase_reviewer.md`: Test case reviewer persona
 
 ## Key Dependencies
 

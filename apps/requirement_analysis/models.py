@@ -330,6 +330,77 @@ class GenerationConfig(models.Model):
         return cls.objects.filter(is_active=True).first()
 
 
+class AIModelProvider(models.Model):
+    """模型池 - 只保存模型调用信息，不包含业务角色语义"""
+    PROVIDER_CHOICES = [
+        ('deepseek', 'DeepSeek'),
+        ('qwen', '通义千问'),
+        ('siliconflow', '硅基流动'),
+        ('zhipu', '智谱'),
+        ('xiaomi', '小米'),
+        ('openai_compatible', 'OpenAI 兼容'),
+        ('other', '其他'),
+    ]
+
+    name = models.CharField(max_length=100, verbose_name='配置名称')
+    provider_type = models.CharField(max_length=30, choices=PROVIDER_CHOICES, verbose_name='模型提供商')
+    api_key = models.CharField(max_length=200, verbose_name='API Key', blank=True, null=True)
+    base_url = models.URLField(verbose_name='API Base URL')
+    model_name = models.CharField(max_length=100, verbose_name='模型名称')
+    max_tokens = models.IntegerField(default=4096, verbose_name='最大Token数')
+    temperature = models.FloatField(default=0.7, verbose_name='温度参数')
+    top_p = models.FloatField(default=0.9, verbose_name='Top P参数')
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'ai_model_provider'
+        verbose_name = 'AI模型提供商'
+        verbose_name_plural = 'AI模型提供商'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} ({self.get_provider_type_display()})"
+
+    @classmethod
+    def get_active_providers(cls):
+        return cls.objects.filter(is_active=True)
+
+
+class AIModelUsageConfig(models.Model):
+    """业务用途绑定 - 表达某个业务用途选择哪个模型池中的模型"""
+    USAGE_CHOICES = [
+        ('requirement_reviewer', '需求评审专家'),
+        ('requirement_analyzer', '需求分析专家'),
+        ('testcase_writer', '测试用例编写专家'),
+        ('testcase_reviewer', '测试用例评审专家'),
+        ('browser_use_text', 'Browser Use 文本模式'),
+        ('browser_use_vision', 'Browser Use 视觉模式（预留）'),
+    ]
+
+    usage_type = models.CharField(
+        max_length=30, choices=USAGE_CHOICES, unique=True, verbose_name='用途类型'
+    )
+    model_provider = models.ForeignKey(
+        AIModelProvider, on_delete=models.SET_NULL, null=True,
+        related_name='usage_configs', verbose_name='关联模型'
+    )
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name='创建者')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'ai_model_usage_config'
+        verbose_name = 'AI模型用途配置'
+        verbose_name_plural = 'AI模型用途配置'
+
+    def __str__(self):
+        return f"{self.get_usage_type_display()} -> {self.model_provider.name if self.model_provider else '未配置'}"
+
+
 class TestCaseGenerationTask(models.Model):
     """测试用例生成任务模型"""
     STATUS_CHOICES = [
